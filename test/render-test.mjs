@@ -700,6 +700,27 @@ const ctx = vm.createContext(sandbox);
     const okFinal = html2.includes('最终发言');
     okFinal ? pass++ : fail++;
     console.log('  ' + (okFinal ? 'OK   ' : 'FAIL ') + 'session-end 后详情自动刷出最终 sent（不用手动刷新）' + (okFinal ? '' : ' -> ' + html2.slice(0, 100)));
+    // 丢失末次 session-end 时，初连不重复加载，重连则主动补回已完成会话。
+    let detailRequests = 0;
+    sandbox.fetch = async (url) => {
+      if (String(url).includes('/api/sessions/s_sse_1')) {
+        detailRequests++;
+        return { ok: true, json: async () => ({ ...finalSession, finishReason: '断线期间已完成' }) };
+      }
+      if (String(url).includes('/api/sessions?')) return { ok: true, json: async () => ({ sessions: [finalSession] }) };
+      return origFetch2(url);
+    };
+    try {
+      const hello = sseRegistry.hello.at(-1);
+      hello();
+      await sleepMs(25);
+      const initialRequests = detailRequests;
+      hello();
+      await sleepMs(25);
+      const recovered = !initialRequests && detailRequests === 1 && detailBox.innerHTML.includes('断线期间已完成');
+      recovered ? pass++ : fail++;
+      console.log('  ' + (recovered ? 'OK   ' : 'FAIL ') + '重连后补回选中会话的详情');
+    } finally { sandbox.fetch = origFetch2; }
   } catch (e) {
     fail++; console.log('  FAIL SSE 实时性测试抛错: ' + (e && e.message));
   }

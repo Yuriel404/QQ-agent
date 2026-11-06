@@ -342,77 +342,66 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
   const controller = new AbortController();
   const timeoutMs = Math.max(5000, Number(api.timeoutMs) || 180000);
   const timer = setTimeout(() => controller.abort(new Error('请求超时')), timeoutMs);
-  if (signal) {
-    if (signal.aborted) controller.abort(signal.reason ?? new Error('aborted'));
-    else signal.addEventListener('abort', () => controller.abort(signal.reason ?? new Error('aborted')), { once: true });
-  }
+  const onAbort = () => controller.abort(signal.reason ?? new Error('aborted'));
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
 
-  /** 发一次请求。返回 { ok, status, text, headers }，网络层错误直接抛。 */
   const post = async (body) => {
-    const res = await fetch(joinUrl(api.baseUrl, '/chat/completions'), {
-      redirect: api.apiKey ? 'error' : 'follow',
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...authHeaders(api.apiKey, api.baseUrl, api.model) },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    const text = await res.text().catch(() => '');
-    return { ok: res.ok, status: res.status, text, contentType: res.headers.get('content-type') || '' };
+    try {
+      const res = await fetch(joinUrl(api.baseUrl, '/chat/completions'), {
+        redirect: api.apiKey ? 'error' : 'follow',
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...authHeaders(api.apiKey, api.baseUrl, api.model) },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      const text = await res.text().catch(() => '');
+      return { ok: res.ok, status: res.status, text, contentType: res.headers.get('content-type') || '' };
+    } catch (error) {
+      // 网络/超时失败也要回报账号池（只报 HTTP 失败的话，死端点永远不冷却，调度反复踩坑）
+      if (poolAccountId) {
+        reportPoolFeedback({ accountId: poolAccountId, ok: false, status: 0, error: String(error?.cause?.message ?? error?.message ?? error).slice(0, 300) });
+      }
+      // 外部 signal 中止（会话级「中止」按钮）：controller.abort(signal.reason) 的
+      // reason 会成为 error.cause —— 必须原样上抛（消息含"中止"），
+      // isRetryableError 才能判为不可重试、会话才会立刻收尾而不是再打下一发。
+      // 不能走下面的"AbortError → 模型请求超时"分支：那条文案会被当成可重试的超时。
+      if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+      if (error?.name === 'AbortError') throw new Error(`模型请求超时（${timeoutMs}ms）`);
+      throw new Error(`模型请求失败：${error?.cause?.message ?? error?.message ?? error}`);
+    }
   };
 
-  const baseBody = buildBaseBody();
-  if (temp !== null && temp !== undefined && Number.isFinite(Number(temp))) baseBody.temperature = Number(temp);
-  const transformed = await applyRequestTransforms(baseBody);
-  let body = transformed.body;
-  const removedTemperature = transformed.removedTemperature;
-
   let res;
-  try {
-    res = await post(body);
-  } catch (error) {
-    clearTimeout(timer);
-    // 网络/超时失败也要回报账号池（只报 HTTP 失败的话，死端点永远不冷却，调度反复踩坑）
-    if (poolAccountId) {
-      reportPoolFeedback({ accountId: poolAccountId, ok: false, status: 0, error: String(error?.cause?.message ?? error?.message ?? error).slice(0, 300) });
-    }
-    // 外部 signal 中止（会话级「中止」按钮）：controller.abort(signal.reason) 的
-    // reason 会成为 error.cause —— 必须原样上抛（消息含"中止"），
-    // isRetryableError 才能判为不可重试、会话才会立刻收尾而不是再打下一发。
-    // 不能走下面的"AbortError → 模型请求超时"分支：那条文案会被当成可重试的超时。
-    if (signal?.aborted) throw signal.reason ?? new Error('aborted');
-    if (error?.name === 'AbortError') throw new Error(`模型请求超时（${timeoutMs}ms）`);
-    throw new Error(`模型请求失败：${error?.cause?.message ?? error?.message ?? error}`);
-  }
-
-  // ── 参数被网关拒绝时的一次性降级重试 ──
-  // 场景：Skill 加上了 thinking/reasoning 参数，但该网关/模型不认（400/422）。
-  // 谁来决定"去掉哪些参数"？由 Skill 通过 llm.retry-advisor 给建议；
-  // **重试动作仍然在这里执行**，所以超时预算、abort、日志、计费口径都不变。
   let degradeNote = null;
-  if (!res.ok && (res.status === 400 || res.status === 422)) {
-    const retry = await withoutRejectedParams(body, res.text, ctx, res.status);
-    if (retry) {
-      degradeNote = retry.reason || '网关拒绝扩展参数，已去掉后重试';
-      // 思考参数被摘掉后，"与 temperature 互斥"的前提就不成立了，
-      // 把用户原本设置的温度还回去，让降级路径等价于"该 Skill 从未生效"。
-      if (removedTemperature !== undefined && retry.body.temperature === undefined) {
-        retry.body.temperature = removedTemperature;
-      }
-      try {
-        res = await post(retry.body);
-      } catch (error) {
-        clearTimeout(timer);
-        // 降级重试的网络失败同样回报账号池
-        if (poolAccountId) {
-          reportPoolFeedback({ accountId: poolAccountId, ok: false, status: 0, error: String(error?.cause?.message ?? error?.message ?? error).slice(0, 300) });
+  try {
+    const baseBody = buildBaseBody();
+    if (temp !== null && temp !== undefined && Number.isFinite(Number(temp))) baseBody.temperature = Number(temp);
+    const transformed = await applyRequestTransforms(baseBody);
+    const body = transformed.body;
+    const removedTemperature = transformed.removedTemperature;
+    res = await post(body);
+
+    // ── 参数被网关拒绝时的一次性降级重试 ──
+    // 场景：Skill 加上了 thinking/reasoning 参数，但该网关/模型不认（400/422）。
+    // 谁来决定"去掉哪些参数"？由 Skill 通过 llm.retry-advisor 给建议；
+    // **重试动作仍然在这里执行**，所以超时预算、abort、日志、计费口径都不变。
+    if (!res.ok && (res.status === 400 || res.status === 422)) {
+      const retry = await withoutRejectedParams(body, res.text, ctx, res.status);
+      if (retry) {
+        degradeNote = retry.reason || '网关拒绝扩展参数，已去掉后重试';
+        // 思考参数被摘掉后，"与 temperature 互斥"的前提就不成立了，
+        // 把用户原本设置的温度还回去，让降级路径等价于"该 Skill 从未生效"。
+        if (removedTemperature !== undefined && retry.body.temperature === undefined) {
+          retry.body.temperature = removedTemperature;
         }
-        if (signal?.aborted) throw signal.reason ?? new Error('aborted');
-        if (error?.name === 'AbortError') throw new Error(`模型请求超时（${timeoutMs}ms）`);
-        throw new Error(`模型请求失败：${error?.cause?.message ?? error?.message ?? error}`);
+        res = await post(retry.body);
       }
     }
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
-  clearTimeout(timer);
 
   if (!res.ok) {
     // 回报账号池：失败要降权，限流还要冷却

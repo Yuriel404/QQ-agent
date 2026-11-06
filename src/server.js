@@ -23,8 +23,18 @@ app.start().catch((error) => {
   process.exit(1);
 });
 
-process.on('SIGINT', async () => {
+let stopping = false;
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
   console.log('退出中…');
-  await app.stop();
-  process.exit(0);
-});
+  try {
+    await app.stop();
+    process.exit(0);
+  } catch (error) {
+    console.error('[退出失败]', error);
+    process.exit(1);
+  }
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

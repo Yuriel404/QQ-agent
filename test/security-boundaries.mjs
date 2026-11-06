@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -68,6 +69,7 @@ try {
   const signal = new AbortController().signal;
   const chat = () => chatCompletion({ messages: [{ role: 'user', content: 'hi' }], signal });
   for (let i = 0; i < 15; i++) await chat();
+  assert.equal(getEventListeners(signal, 'abort').length, 0);
   updateConfig({ providers: [...catalog, { id: 'a', baseURL: b, models: [] }] });
   assert.equal(currentProviders().at(-1).apiKey, '');
   updateConfig({ providers: catalog.map(({ apiKey, ...rest }) => rest) });
@@ -75,6 +77,7 @@ try {
   assert.equal(requests.at(-1).key, 'Bearer key-a');
   globalThis.fetch = async () => { throw Error('offline'); };
   await assert.rejects(chat, /offline/);
+  assert.equal(getEventListeners(signal, 'abort').length, 0);
   updateConfig({ api: { baseUrl: b } });
   assert.equal(resolveApiKey(getConfig()), '');
   assert.equal(getConfig().api.apiKey, '');

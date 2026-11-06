@@ -122,7 +122,7 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
   /* 抢到锁后立刻注册退出清理：正常 exit / SIGINT / SIGTERM 都会释放锁文件。
      曾经只在 stop() 里释放 —— 进程被直接杀掉（任务管理器结束、控制台叉掉）
      时锁文件残留，下次启动要靠"PID 已死"探测才能清掉，多一层失败面。 */
-  instanceLockModule.registerLockCleanup();
+  const unregisterLockCleanup = instanceLockModule.registerLockCleanup();
   const streams = new EventStreams();
 
   // ── SnowLuma 程序目录与进程管理 ──
@@ -205,6 +205,9 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
   let snowlumaLaunching = false;   // SnowLuma 启动互斥标记（防连点「运行」按钮并发拉起多个）
   let snowlumaStopping = false;
   let pluginWatcher = null;        // 开发模式热重载 watcher（stop() 时要 close，否则句柄泄漏）
+  let stopping = false;
+  let stopPromise;
+  let loginInfoTimer = null;
   let obPortPollTimer = null;      // OneBot WS 端口就绪轮询（stop() 时要 clear，start() 里赋值）
 
   function pushSnowlumaLog(text, stream = 'stdout') {
@@ -1230,6 +1233,7 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
   });
 
   async function handleHttp(req, res) {
+    if (stopping) return json(res, 503, { error: '服务正在关闭' });
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
 
@@ -1451,6 +1455,7 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
     })();
 
     await Promise.all([skillsReady, snowlumaReady]);
+    if (stopping) return port;
 
     // OneBot 连接前先尝试从 SnowLuma 配置同步令牌（脱敏副本/首次登录场景尤其重要）
     if (syncSnowlumaTokens()) {
@@ -1460,6 +1465,7 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
       // accessToken/httpToken 已由 applyTokens 直接挂到实例（候选[0]）
     }
     await onebot.connect();
+    if (stopping) return port;
 
     // ── OneBot 端口就绪轮询（2026-09-19）────────────────────────────────────
     // WS 3001 只有「QQ 登录 → Hook 检出 → OneBot 实例拉起」后才监听。常见时序：
@@ -1474,7 +1480,7 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
     obPortPollTimer = setInterval(async () => {
       if (onebot.connected) return;          // 连着：无事可做（轮询本身极廉价）
       const open = await isPortOpen('127.0.0.1', obWsPort);
-      if (open && !onebot.connected) {
+      if (open && !stopping && !onebot.connected) {
         // 端口从关到开：立即重连（reconnect 会重置退避，秒级恢复）
         onebot.reconnect();
       }
@@ -1485,7 +1491,7 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
     // open 时的 get_login_info 失败 → selfInfo 恒空 → UI"检测不到账号"。
     // onebot.js 里已有 15 秒延迟补拉；这里再挂一道 45 秒后的终检：
     // 连着但仍没有 selfInfo 就强制补一次并广播状态（长期运行的兜底，幂等）。
-    setTimeout(() => {
+    loginInfoTimer = setTimeout(() => {
       if (!onebot.connected || onebot.selfInfo) return;
       onebot.call('get_login_info').then((info) => {
         if (info) {
@@ -1494,7 +1500,8 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
           log('[onebot] 账号信息延迟恢复成功');
         }
       }).catch(() => { /* 仍失败：连接层已尽力，UI 状态如实反映 */ });
-    }, 45_000).unref?.();
+    }, 45_000);
+    loginInfoTimer.unref();
     if (getConfig().proactive?.enabled) orchestrator.startProactiveLoop();
     orchestrator.startReminderLoop();   // 提醒（闹钟）调度：到点往群里发提醒
     log(`控制台已就绪（监听 ${consoleAccess.host}，端口 ${port}）`);
@@ -1533,7 +1540,18 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
     return result;
   }
 
-  async function stop() {
+  function stop() {
+    return stopPromise ??= stopCore();
+  }
+
+  async function stopCore() {
+    stopping = true;
+    const httpClosed = new Promise((resolve) => server.close(resolve));
+    streams.close();
+    // 空闲 SSE 已关闭。正在处理的普通请求给五秒收尾，防止慢速上传占住实例锁。
+    const closeDeadline = setTimeout(() => server.closeAllConnections(), 5000);
+    closeDeadline.unref();
+    clearTimeout(loginInfoTimer);
     // 先停掉热重载 watcher：否则 stop() 之后文件变动仍会触发重载 + 广播
     try { pluginWatcher?.close?.(); } catch { /* ignore */ }
     pluginWatcher = null;
@@ -1543,9 +1561,9 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
     // 索引缓存立刻落盘：正常运行中靠防抖（5s），退出前必须写一次，
     // 否则最后的会话变动丢失、下次启动要靠后台对账补（慢路径）
     sessions.flushIndexCache();
-    streams.close();
     onebot.close();
-    server.close();
+    await httpClosed;
+    clearTimeout(closeDeadline);
     // 内置启动的 SnowLuma：QQ Agent 退出时一并关掉，避免留一个无窗口的后台进程。
     // 注意：SnowLuma 退出时不一定能立刻把 config 落盘，但我们的 stop 不会再去读它，
     // 下次启动会读到完整文件。
@@ -1555,6 +1573,7 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
     logger.flush();
     // 解绑本次 createApp 的日志转发器，避免 Electron/测试重复创建 app 时监听器累积。
     try { removeAppLogListener?.(); } catch { /* ignore */ }
+    unregisterLockCleanup();
     releaseInstanceLock();
   }
 

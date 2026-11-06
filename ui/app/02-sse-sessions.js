@@ -3,6 +3,15 @@
 // ── SSE ──
 function connectSSE() {
   const es = new EventSource('/api/events');
+  let receivedHello = false;
+  es.addEventListener('hello', () => {
+    if (receivedHello) {
+      // 断线期间可能错过了最终态或撤销的会话。丢弃旧 patch 并重新取完整快照。
+      pendingSessionDetail.clear();
+      loadSessions({ quiet: true, refreshSelection: true });
+    }
+    receivedHello = true;
+  });
   es.addEventListener('session-start', () => {
     scheduleListReload();
     refreshStatus();
@@ -173,21 +182,26 @@ function connectSSE() {
 }
 
 // ── 会话视图 ──
-async function loadSessions({ quiet = false } = {}) {
+async function loadSessions({ quiet = false, refreshSelection = false } = {}) {
   try {
     // 一次全取：后端上限 2^20（约等于不限），前端靠分页渲染（SESSION_PAGE）避免卡顿
     const data = await api('/api/sessions?limit=1048576');
     state.sessions = data.sessions || [];
+    if (refreshSelection && state.currentSessionId && !state.sessions.some((s) => s.id === state.currentSessionId)) {
+      state.currentSessionId = null;
+      state.sessionDetail = null;
+      $('#session-detail').innerHTML = '<div class="empty-hint">← 选择左侧会话查看完整过程</div>';
+    }
     renderSessionList();
     // 自动跟随最新运行中的会话
     if (state.autoFollowRunning && !state.currentSessionId) {
       const active = state.sessions.find((s) => s.status === 'waiting' || s.status === 'running');
-      if (active) selectSession(active.id);
+      if (active) return selectSession(active.id);
     }
     // 当前打开的会话在等待/运行中时，也顺手刷新详情
     if (state.currentSessionId) {
       const cur = state.sessions.find((s) => s.id === state.currentSessionId);
-      if (cur && (cur.status === 'running' || cur.status === 'waiting')) {
+      if (cur && (refreshSelection || cur.status === 'running' || cur.status === 'waiting')) {
         loadSessionDetail(state.currentSessionId, { quiet: true });
       }
     }
@@ -503,8 +517,9 @@ let lastDetailFp = null;
 async function loadSessionDetail(id, { quiet = false } = {}) {
   try {
     const s = await api(`/api/sessions/${id}`);
+    if (state.currentSessionId !== id) return;
     state.sessionDetail = s;
-    if (state.currentSessionId === id && state.tab === 'sessions') renderSessionDetail(s);
+    if (state.tab === 'sessions') renderSessionDetail(s);
   } catch (e) {
     if (!quiet) $('#session-detail').innerHTML = `<div class="empty-hint">加载失败：${esc(e.message)}</div>`;
   }
@@ -515,7 +530,7 @@ function renderSessionDetail(s) {
   if (!detail) return;
   // 内容没变（轮询/SSE 重复推送）→ 完全不动 DOM，保住滚动位置和展开状态
   // json 模式切换也要触发重渲染
-  const fp = `${s.id}|${s.status}|${s.rounds || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}`;
+  const fp = `${s.id}|${s.status}|${s.rounds || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error || ''}|${s.activity || ''}|${s.finishReason || ''}|${s.endedAt || ''}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}`;
   if (lastDetailFp === fp) return;
   const firstRender = lastDetailFp === null;
   lastDetailFp = fp;

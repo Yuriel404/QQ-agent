@@ -264,7 +264,7 @@ export function createRoutes(deps) {
       method: 'POST', pattern: '/api/snowluma/stop',
       handler: async ({ res, json }) => {
         try {
-          const stopped = stopSnowluma();
+          const stopped = await stopSnowluma();
           return json(res, 200, { ok: true, stopped, embedded: snowlumaStatus().embedded, pid: snowlumaStatus().pid });
         } catch (error) {
           return json(res, 500, { ok: false, error: String(error?.message ?? error) });
