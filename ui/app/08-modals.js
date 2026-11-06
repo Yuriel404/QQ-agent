@@ -1271,6 +1271,8 @@ async function saveConfig({ quiet = false } = {}) {
     const enteredBochaKey = val('#cfg-bocha-key', '').trim();
     const enteredBaiduKey = val('#cfg-baidu-key', '').trim();
     const enteredMetasoKey = val('#cfg-metaso-key', '').trim();
+    const tavilyInput = el('#cfg-tavily-key');
+    const enteredTavilyKey = tavilyInput?.dataset.edited ? tavilyInput.value.trim() : '';
     patch.webSearch = {
       ...(c.webSearch || {}),
       enabled: chk('#cfg-websearch', c.webSearch?.enabled !== false),
@@ -1298,6 +1300,8 @@ async function saveConfig({ quiet = false } = {}) {
         ...(c.webSearch?.metaso || {}),
         ...(enteredMetasoKey && enteredMetasoKey !== '******' ? { apiKey: enteredMetasoKey } : {})
       },
+      // 仅发送刚编辑的 Tavily 密钥。浏览已存明文或切换提供方不会回传密钥或覆盖端点。
+      tavily: enteredTavilyKey && enteredTavilyKey !== '******' ? { apiKey: enteredTavilyKey } : {},
       // 自定义搜索服务：列表由「添加/删除」按钮维护（POST /api/search-providers），
       // 但**当前选中那家的 Key 编辑框**在这里随表单提交 —— 用户改 Key 的主路径
       // 就是这个框。按 id 定位条目原地更新；掩码/留空 = 不动，明文 = 覆盖。
@@ -1446,6 +1450,14 @@ async function saveConfig({ quiet = false } = {}) {
   const useKeepalive = bodyStr.length < 60_000;
   const data = await api('/api/config', { method: 'POST', body: bodyStr, ...(useKeepalive ? { keepalive: true } : {}) });
   state.config = data.config;
+  if (sec === 'search') {
+    const input = el('#cfg-tavily-key');
+    if (patch.webSearch.tavily.apiKey && input?.value.trim() === patch.webSearch.tavily.apiKey) {
+      delete input.dataset.edited;
+    }
+    const status = el('#search-provider-key-status');
+    if (status) status.textContent = searchProviderStatus(val('#cfg-searchprovider'), data.config.webSearch);
+  }
   if (!quiet) $('#model-label').textContent = `模型：${state.config.api.model || '未设置'}`;
   return data;
 }

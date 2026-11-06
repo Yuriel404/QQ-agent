@@ -49,6 +49,7 @@ function renderSettingsSidebar() {
     ['onebot', 'OneBot（SnowLuma）'],
     ['tools', '工具与技能']
   ];
+  const menuScroll = sidebar.querySelector('.settings-menu')?.scrollLeft || 0;
   sidebar.innerHTML = `
     <div class="settings-runstate">
       <div class="rs-title">机器人运行状态</div>
@@ -58,6 +59,8 @@ function renderSettingsSidebar() {
     <div class="settings-menu">
       ${menu.map(([id, label]) => `<button class="settings-menu-item ${state.settingsSection === id ? 'active' : ''}" data-section="${id}">${label}${id === 'desktop' && (typeof updateAvailable !== 'undefined' && updateAvailable) ? '<span class="update-dot" title="发现新版本"></span>' : ''}</button>`).join('')}
     </div>`;
+  const menuElement = sidebar.querySelector('.settings-menu');
+  menuElement.scrollLeft = menuScroll;
   sidebar.querySelectorAll('.settings-menu-item').forEach((el) => {
     el.addEventListener('click', () => {
       // 切区块 = 整页表单重建：先把防抖窗口内挂起的保存发出，
@@ -99,6 +102,7 @@ function renderSettings() {
       id: el.id,
       selStart: el.selectionStart ?? null,
       selEnd: el.selectionEnd ?? null,
+      edited: el.dataset.edited,
       value: el.value
     };
   })();
@@ -123,6 +127,7 @@ function renderSettings() {
     if (back && (back.tagName === 'INPUT' || back.tagName === 'TEXTAREA')) {
       try {
         back.value = focusSnap.value;   // 覆盖渲染值：防抖窗口内的输入不被回滚
+        if (focusSnap.edited) back.dataset.edited = focusSnap.edited;
         if (focusSnap.selStart != null) back.setSelectionRange(focusSnap.selStart, focusSnap.selEnd ?? focusSnap.selStart);
         back.focus({ preventScroll: true });
       } catch { /* 恢复失败不致命 */ }
@@ -248,6 +253,13 @@ function renderApiSection(c) {
 }
 
 
+function searchProviderStatus(provider, search) {
+  if (provider === 'bing') return '无需 API Key';
+  if (provider === 'tavily') return search?.tavily?.hasApiKey ? '已配置 API Key' : '支持免密钥搜索';
+  if (provider.startsWith('custom:')) return '';
+  return search?.[provider]?.hasApiKey ? '已配置 API Key' : '未配置 API Key';
+}
+
 function renderSearchSection(c) {
   // 每个提供方区块的初始显隐都要跟当前 provider 一致
   const prov = String(c.webSearch?.provider || 'bing');
@@ -255,40 +267,33 @@ function renderSearchSection(c) {
   const customProvs = Array.isArray(c.webSearch?.providers) ? c.webSearch.providers : [];
   return `
     <h3 id="settings-search">搜索服务</h3>
-    <div class="hint" style="margin-bottom:12px">
-      当前提供方：${prov === 'bing' ? 'Bing 网页解析' : prov === 'deepseek' ? 'DeepSeek 原生搜索' : prov === 'zhipu' ? '智谱 Web Search' : prov === 'bocha' ? '博查 AI Search' : prov === 'baidu' ? '百度千帆 AI Search' : prov === 'metaso' ? '秘塔 AI 搜索' : '自定义'}
-      ${(() => {
-        // 当前提供方已保存的 Key 状态（与模型 API 页同款提示口径）
-        const keyState = {
-          deepseek: c.webSearch?.deepseek?.hasApiKey,
-          zhipu: c.webSearch?.zhipu?.hasApiKey,
-          bocha: c.webSearch?.bocha?.hasApiKey,
-          baidu: c.webSearch?.baidu?.hasApiKey,
-          metaso: c.webSearch?.metaso?.hasApiKey
-        }[prov];
-        if (prov === 'bing') return ' · 无需 API Key';
-        if (prov?.startsWith('custom:')) return '';
-        return keyState ? ' · 已保存 API Key（不显示）' : ' · 未保存 API Key';
-      })()}
-    </div>
-    <div class="checkbox-row"><input type="checkbox" id="cfg-websearch" ${c.webSearch?.enabled !== false ? 'checked' : ''} />
-      <label for="cfg-websearch">联网搜索：启用 web_search / web_fetch 工具</label></div>
-    <div class="field"><label>搜索提供方</label>
+    ${setCard({
+      icon: '🔍', open: true,
+      title: '联网搜索 <span class="badge" id="search-pool-mode-hint" role="status">读取中</span>',
+      val: '<button type="button" class="btn btn-small" id="manage-search-pool">管理搜索池</button>',
+      body: `
+    <div class="checkbox-row">${switchHtml('cfg-websearch', c.webSearch?.enabled !== false, '启用搜索与网页抓取')}</div>
+    <div class="field"><label for="cfg-searchprovider" id="search-provider-label">搜索提供方</label>
       <select id="cfg-searchprovider">
         <option value="bing" ${prov === 'bing' ? 'selected' : ''}>Bing 网页解析</option>
+        <option value="tavily" ${prov === 'tavily' ? 'selected' : ''}>Tavily Search</option>
         <option value="deepseek" ${prov === 'deepseek' ? 'selected' : ''}>DeepSeek 原生搜索</option>
         <option value="zhipu" ${prov === 'zhipu' ? 'selected' : ''}>智谱 Web Search</option>
         <option value="bocha" ${prov === 'bocha' ? 'selected' : ''}>博查 AI Search</option>
         <option value="baidu" ${prov === 'baidu' ? 'selected' : ''}>百度千帆 AI Search</option>
         <option value="metaso" ${prov === 'metaso' ? 'selected' : ''}>秘塔 AI 搜索</option>
         ${customProvs.map((p) => `<option value="custom:${esc(p.id)}" ${prov === `custom:${p.id}` ? 'selected' : ''}>${esc(p.name || p.baseUrl)}（自定义 · ${p.type === 'bing' ? '网页解析' : 'JSON 接口'}）</option>`).join('')}
-      </select></div>
-    <div class="field" id="custom-provider-manage" style="${prov.startsWith('custom:') ? '' : 'display:none'}">
+      </select>
+      <div class="hint" id="search-provider-key-status">${searchProviderStatus(prov, c.webSearch)}</div>
+      <div class="hint" id="search-provider-mode-note" hidden>在这里编辑服务参数和默认凭据。切回单服务时，将使用所选的提供方。</div></div>
+    <div class="field" id="search-provider-test" style="${prov === 'tavily' || prov.startsWith('custom:') ? '' : 'display:none'}">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-        <button class="btn btn-small" id="test-search-provider-btn">测试这个搜索服务</button>
-        <button class="btn btn-small btn-danger" id="del-search-provider-btn">删除这个搜索服务</button>
-        <span id="search-provider-action-hint" class="muted" style="font-size:12px"></span>
+        <button type="button" class="btn btn-small" id="test-search-provider-btn">测试这个搜索服务</button>
+        <span id="search-provider-action-hint" role="status" class="muted" style="font-size:12px"></span>
       </div>
+    </div>
+    <div class="field" id="custom-provider-manage" style="${prov.startsWith('custom:') ? '' : 'display:none'}">
+      <button type="button" class="btn btn-small btn-danger" id="del-search-provider-btn">删除这个搜索服务</button>
       <label>API Key${(() => {
         const cp = customProvs.find((p) => `custom:${p.id}` === prov);
         return cp?.hasApiKey ? '（已保存，可查看/替换/清除）' : '（未保存；多数自建服务留空即可）';
@@ -300,6 +305,15 @@ function renderSearchSection(c) {
       </div>
     </div>
     <div class="field" id="bing-search-fields" style="${prov === 'bing' ? '' : 'display:none'}"><label>搜索地址（高级：可替换为兼容 Bing 结果格式的引擎）</label><input type="text" id="cfg-searchurl" value="${esc(c.webSearch?.searchUrl || 'https://cn.bing.com/search')}" /></div>
+    <div class="field" id="tavily-search-fields" style="${prov === 'tavily' ? '' : 'display:none'}">
+      <label for="cfg-tavily-key">Tavily API Key（可选）</label>
+      <div style="display:flex;gap:8px">
+        <input type="password" id="cfg-tavily-key" value="${c.webSearch?.tavily?.hasApiKey ? '******' : ''}" placeholder="输入新的 Tavily API Key" autocomplete="new-password" style="flex:1" />
+        <button class="btn btn-small" id="cfg-tavily-key-toggle" type="button">显示</button>
+        <button class="btn btn-small btn-danger" id="cfg-tavily-key-clear" type="button">清除密钥</button>
+      </div>
+      <div class="hint">也可以在服务端设置 TAVILY_API_KEY。两处都未设置时，使用 Tavily 限流的免密钥搜索。</div>
+    </div>
     <div class="field-row" id="deepseek-search-fields" style="${prov === 'deepseek' ? '' : 'display:none'}">
       <div class="field"><label>DeepSeek 搜索 API Key（留空用环境变量 DEEPSEEK_API_KEY）</label>
         <div style="display:flex;gap:8px">
@@ -346,7 +360,8 @@ function renderSearchSection(c) {
         <button class="btn btn-small btn-danger" id="cfg-metaso-key-clear" type="button" title="清除已保存的 API Key（留空保存并不会清除，必须点这个按钮）">清除密钥</button>
       </div></div>
 
-    <h3>添加自定义搜索服务</h3>
+    `})}
+    ${setCard({ icon: '＋', gray: true, title: '添加自定义搜索服务', body: `
     <div class="field-row">
       <div class="field"><label>名称（自己辨认用）</label>
         <input type="text" id="new-sp-name" placeholder="例如：自建 SearXNG" /></div>
@@ -365,10 +380,10 @@ function renderSearchSection(c) {
         <input type="text" id="new-sp-model" placeholder="Responses API 风格才需要" /></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin:8px 0">
-      <button class="btn btn-small" id="add-search-provider-btn">＋ 添加并选中</button>
+      <button class="btn btn-small" id="add-search-provider-btn">添加并选中</button>
       <span id="add-search-provider-hint" class="muted" style="font-size:12px"></span>
     </div>
-  `;
+    `})}`;
 }
 
 function renderMemorySettingsSection(c) {

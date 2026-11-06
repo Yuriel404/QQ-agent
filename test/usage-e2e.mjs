@@ -62,7 +62,11 @@ const tabStubs = TAB_NAMES.map((n) => { const el = makeEl(); el.dataset.tab = n;
 const viewStubs = TAB_NAMES.map((n) => makeEl('view-' + n));
 const document = {
   documentElement: makeEl(), body: makeEl(), head: makeEl(),
-  querySelector(sel) { return sel.startsWith('#') ? document.getElementById(sel.slice(1)) : (byId.get(sel) || (byId.set(sel, makeEl()), byId.get(sel))); },
+  querySelector(sel) {
+    // 此流程不进入聊天设置，其专属编辑器在实际页面上不存在。
+    if (sel === '#ac-editor') return null;
+    return sel.startsWith('#') ? document.getElementById(sel.slice(1)) : (byId.get(sel) || (byId.set(sel, makeEl()), byId.get(sel)));
+  },
   querySelectorAll(sel) {
     if (sel === '.tab') return tabStubs;
     if (sel === '.view') return viewStubs;

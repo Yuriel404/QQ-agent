@@ -213,6 +213,166 @@ await c.check('从首屏进入人设设置，保存、取消、清空和预览�
   }
 });
 
+await c.check('Tavily 搜索支持无密钥选择、测试前保存以及密钥的查看和清除', async () => {
+  const find = (selector) => window.document.querySelector(selector);
+  const provider = ctx.app.getConfig().webSearch.provider;
+  const key = 'tvly-ui-test-only';
+  const tested = [];
+  const patches = [];
+  const fetch = window.fetch;
+  // 保留真实配置及密钥 API，只替代会触发外网搜索的测试接口。
+  window.fetch = async (url, init = {}) => {
+    if (url === '/api/search-providers/test') {
+      assert.deepEqual(JSON.parse(init.body), { builtin: 'tavily' });
+      const ws = ctx.app.getConfig().webSearch;
+      tested.push({ provider: ws.provider, key: ws.tavily.apiKey });
+      return Response.json({ result: { ok: true, count: 1, latencyMs: 5, sample: '测试结果' } });
+    }
+    if (url === '/api/config' && init.method === 'POST') patches.push(JSON.parse(init.body));
+    return fetch(url, init);
+  };
+  try {
+    find('[data-section="search"]').click();
+    const select = await waitFor(() => find('#cfg-searchprovider'), 4000, '搜索服务表单');
+    select.value = 'tavily';
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    assert.equal(find('#tavily-search-fields').style.display, '');
+    assert.equal(find('#search-provider-test').style.display, '');
+    assert.match(find('#search-provider-key-status').textContent, /免密钥/);
+    find('#test-search-provider-btn').click();
+    await waitFor(() => find('#search-provider-action-hint').textContent.includes('测试结果'));
+    assert.deepEqual(tested[0], { provider: 'tavily', key: '' });
+
+    const input = find('#cfg-tavily-key');
+    input.value = key;
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    find('#test-search-provider-btn').click();
+    await waitFor(() => tested.length === 2);
+    assert.deepEqual(tested[1], { provider: 'tavily', key });
+    // 重进分区时只显示掩码；主动查看或更改其他设置也不应回传明文。
+    find('[data-section="search"]').click();
+    await waitFor(() => find('#cfg-tavily-key')?.value === '******', 4000, '重新打开后显示已保存密钥的掩码');
+    find('#cfg-tavily-key-toggle').click();
+    await waitFor(() => find('#cfg-tavily-key').value === key);
+    patches.length = 0;
+    find('#test-search-provider-btn').click();
+    await waitFor(() => tested.length === 3);
+    assert.ok(!patches.some((patch) => JSON.stringify(patch).includes(key)));
+    find('#cfg-tavily-key-clear').click();
+    (await waitFor(() => find('#ui-confirm-ok'))).click();
+    await waitFor(() => ctx.app.getConfig().webSearch.tavily.apiKey === '' && find('#cfg-tavily-key').value === '');
+  } finally {
+    window.fetch = fetch;
+    ctx.app.updateConfig({ webSearch: { provider, tavily: { apiKey: '' } } });
+  }
+});
+
+await c.check('搜索池从界面添加多凭据、设置额度、调整服务顺序与恢复用量', async () => {
+  const find = (selector) => window.document.querySelector(selector);
+  const get = (selector) => waitFor(() => find(selector), 4000, selector);
+  const settled = () => waitFor(() => find('#pool-status')?.textContent === '已保存', 4000, '搜索池状态已保存');
+  const openKey = async (button) => {
+    button.click();
+    return get('.model-modal-overlay:not(.closing) #pool-key-form');
+  };
+  const submitKey = async (form) => {
+    form.querySelector('[type="submit"]').click();
+    await waitFor(() => !form.closest('.model-modal-overlay')?.isConnected || form.closest('.model-modal-overlay').classList.contains('closing'), 4000, '凭据保存完成');
+    await settled();
+  };
+  const rows = () => [...window.document.querySelectorAll('#pool-content [data-key-id]')];
+  function useMore(row, action) {
+    const menu = row.querySelector('.pool-key-more');
+    assert.equal(menu.open, false);
+    const summary = menu.querySelector('summary');
+    assert.ok(summary.getAttribute('aria-label'));
+    summary.click();
+    assert.equal(menu.open, true);
+    menu.querySelector(`[data-key="${action}"]`).click();
+  }
+  const read = async () => (await (await ctx.consoleFetch('/api/search-pool')).json()).pool;
+  assert.ok(find('script[defer][src="/app/13-search-pool.js"]'));
+  assert.equal((await ctx.consoleFetch('/app/13-search-pool.js')).status, 200);
+  (await get('#manage-search-pool')).click();
+  const mode = await get('#pool-config');
+  mode.elements.mode.value = 'pool';
+  mode.elements.threshold.value = '2';
+  mode.querySelector('[type="submit"]').click();
+  await settled();
+  assert.equal((await read()).enabled, true);
+  assert.equal(find('#search-pool-mode-hint').textContent, '搜索池待配置');
+
+  const secret = 'tvly-pool-ui-test-only';
+  for (const [provider, label, value] of [['tavily', '账户甲', secret], ['tavily', '账户乙', ''], ['bing', '备用搜索', '']]) {
+    const form = await openKey(find('[data-key="add"]'));
+    form.elements.provider.value = provider;
+    form.elements.provider.dispatchEvent(new window.Event('change'));
+    assert.equal(form.elements.secret.disabled, provider === 'bing');
+    form.elements.label.value = label;
+    form.elements.secret.value = value;
+    form.elements.quota.value = '5';
+    form.elements.period.value = 'day';
+    await submitKey(form);
+  }
+  let pool = await read();
+  assert.deepEqual(pool.chain, ['tavily', 'bing']);
+  assert.equal(pool.keys.length, 3);
+  assert.equal(JSON.stringify(pool).includes(secret), false);
+  assert.equal(find('#search-pool-mode-hint').textContent, '搜索池');
+  const first = rows()[0];
+  assert.match(first.textContent, /账户甲.*Tavily/s);
+  assert.ok(!first.textContent.includes(first.dataset.keyId));
+  const edit = await openKey(first.querySelector('[data-key="edit"]'));
+  assert.equal(edit.elements.secret.value, '');
+  edit.elements.label.value = '更新名称';
+  await submitKey(edit);
+  assert.equal((await read()).keys[0].hasApiKey, true);
+  const useDefault = await openKey(rows()[2].querySelector('[data-key="edit"]'));
+  useDefault.elements.useDefault.checked = true;
+  await submitKey(useDefault);
+  const { runSearchPool } = await import('../src/search-pool.js');
+  await runSearchPool('离线界面测试', async (_provider, _query, apiKey) => {
+    if (apiKey === secret) throw Object.assign(new Error('无效的测试凭据'), { status: 401 });
+    return { results: [] };
+  });
+  find('#pool-refresh').click();
+  await waitFor(() => rows()[0].textContent.includes('失败停用'), 4000, '显示凭据失败状态');
+  useMore(rows()[0], 'reset');
+  await settled();
+  const recovered = (await read()).keys[0];
+  assert.equal(recovered.status, 'ready');
+  assert.equal(recovered.used, 1);
+
+  find('[data-provider="bing"] [data-chain="up"]').click();
+  await settled();
+  assert.deepEqual((await read()).chain, ['bing', 'tavily']);
+  find('[data-provider="bing"] [data-chain="remove"]').click();
+  await settled();
+  assert.equal((await read()).keys.length, 3);
+  const addService = find('#pool-chain-add');
+  addService.elements.provider.value = 'bing';
+  addService.querySelector('[type="submit"]').click();
+  await settled();
+  useMore(rows()[0], 'toggle');
+  await settled();
+  assert.equal((await read()).keys[0].status, 'disabled');
+  const beforeReset = rows()[0];
+  useMore(beforeReset, 'resetUsage');
+  (await get('.model-modal-overlay:not(.closing) #ui-confirm-ok')).click();
+  await waitFor(() => !beforeReset.isConnected, 4000, '重置用量后更新凭据行');
+  await settled();
+  assert.equal((await read()).keys[0].used, 0);
+  useMore(rows()[0], 'remove');
+  (await get('.model-modal-overlay:not(.closing) #ui-confirm-ok')).click();
+  await waitFor(() => rows().length === 2, 4000, '移除已删除凭据');
+  await settled();
+  pool = await read();
+  assert.equal(pool.keys.length, 2);
+  assert.equal(pool.failureThreshold, 2);
+  assert.ok(!find('#pool-content').textContent.includes(secret));
+  find('#pool-content').closest('.model-modal-overlay').querySelector('.model-modal-close').click();
+});
+
 // ── 1) 逐个页签（点真实按钮）────────────────────────────────────────────
 // 注意：8 个 view 都是 index.html 里的静态节点，切页签不会新建元素
 //（它们在首屏那轮就已全部扫到）。所以这里统计"访问过的页签数"，而不是新增元素数。

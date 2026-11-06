@@ -38,7 +38,7 @@ function bindSettingsEvents(c) {
      一直留在屏上（旧版保存完 1 秒就渐隐，操作反馈太短促、有"没生效"的错觉）。 */
   let dirtyEls = new Set();
   let saveTimer = null;
-  let saving = false;
+  let saving = null;
   // 撤销快照：进入本设置区块时拍一份配置；有改动后显示「撤销」按钮，
   // 点击 = 整份配置回滚到快照（设置是即时生效的，回滚与改动之间发生的一切不负责）。
   const sectionSnapshot = structuredClone(state.config || {});
@@ -51,6 +51,7 @@ function bindSettingsEvents(c) {
 
   function markDirty(el) {
     if (el?.id === 'persona-chat-picker') return;
+    if (el?.id === 'cfg-tavily-key') el.dataset.edited = 'true';
     const block = el?.closest?.('.field, .checkbox-row, .tier-param, .price-card, .tool-card, .settings-runstate, .prompt-preview-card');
     if (block) dirtyEls.add(block);
     showUndoBtn();
@@ -90,13 +91,13 @@ function bindSettingsEvents(c) {
 
   async function doSave() {
     if (saving) { scheduleSave(); return; }
-    saving = true;
     // 渲染守卫：从"开始收集表单"到"state.config 更新完成"期间不允许整页重渲染。
     // saveConfig 会先逐字段读 DOM、再 POST 并用响应覆盖 state.config ——
     // 中途任何重渲染（SSE 事件 / 轮询回调）都会吹掉用户正在输入的值。
     beginSettingsGuard();
     try {
-      await saveConfig({ quiet: true });
+      saving = saveConfig({ quiet: true });
+      await saving;
       refreshStatus();
       startListPoller();
       // 刷新间隔可能刚被改过：重建状态轮询，让新间隔立刻生效
@@ -104,7 +105,7 @@ function bindSettingsEvents(c) {
     } catch (e) {
       console.error('自动保存失败:', e);
     } finally {
-      saving = false;
+      saving = null;
       endSettingsGuard();
       // 黄条保留：dirtyEls 不清 —— 用户切走设置区块/页签时 DOM 重建自然消失。
     }
@@ -318,17 +319,27 @@ function bindSettingsEvents(c) {
   });
 
   // 搜索提供方切换
+  const poolButton = $('#manage-search-pool');
+  if (poolButton) bindSearchPoolButton(poolButton);
   const searchProviderSel = $('#cfg-searchprovider');
+  let searchSelectionRevision = 0;
   if (searchProviderSel) searchProviderSel.addEventListener('change', () => {
+    searchSelectionRevision++;
     const v = searchProviderSel.value;
     const fields = {
       bing: '#bing-search-fields',
+      tavily: '#tavily-search-fields',
       deepseek: '#deepseek-search-fields',
       zhipu: '#zhipu-search-fields',
       bocha: '#bocha-search-fields',
       baidu: '#baidu-search-fields',
       metaso: '#metaso-search-fields'
     };
+    $('#search-provider-key-status').textContent = searchProviderStatus(v, state.config?.webSearch);
+    $('#search-provider-action-hint').textContent = '';
+    const testRow = $('#search-provider-test');
+    if (v === 'tavily' || v.startsWith('custom:')) uiShow(testRow);
+    else uiHide(testRow);
     for (const [provider, sel] of Object.entries(fields)) {
       const el = $(sel);
       // 自定义项形如 'custom:<id>'，统一按 custom 前缀匹配
@@ -389,25 +400,34 @@ function bindSettingsEvents(c) {
     }
   });
 
-  $('#test-search-provider-btn')?.addEventListener('click', async () => {
+  $('#test-search-provider-btn')?.addEventListener('click', async (event) => {
     const hint = $('#search-provider-action-hint');
-    const sel = $('#cfg-searchprovider');
-    const v = sel?.value || '';
-    if (!v.startsWith('custom:')) { if (hint) hint.textContent = '请先选择一个自定义搜索服务'; return; }
+    const button = event.currentTarget;
+    const v = searchProviderSel.value;
+    if (v !== 'tavily' && !v.startsWith('custom:')) return;
+    const revision = searchSelectionRevision;
+    button.disabled = true;
     if (hint) hint.textContent = '测试中…';
     try {
+      // 测试端点读取服务端配置。先落盘刚输入的 Key，并等前一次自动保存结束。
+      if (saving) await saving;
+      if (revision !== searchSelectionRevision || !button.isConnected) return;
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+      await saveConfig({ quiet: true });
       const r = await api('/api/search-providers/test', {
         method: 'POST',
-        body: JSON.stringify({ providerId: v })
+        body: JSON.stringify(v === 'tavily' ? { builtin: 'tavily' } : { providerId: v })
       });
       const res = r.result || {};
-      if (hint) {
+      if (hint && revision === searchSelectionRevision) {
         hint.textContent = res.ok
           ? `✓ 可用（${res.count} 条结果，${res.latencyMs}ms）${res.sample ? `：${res.sample.slice(0, 30)}` : ''}`
           : `✗ ${res.note || '不可用'}`;
       }
     } catch (e) {
-      if (hint) hint.textContent = `测试失败：${e.message}`;
+      if (hint && revision === searchSelectionRevision) hint.textContent = `测试失败：${e.message}`;
+    } finally {
+      button.disabled = false;
     }
   });
 
@@ -508,6 +528,7 @@ function bindSettingsEvents(c) {
     ['cfg-bocha-key-toggle', 'cfg-bocha-key'],
     ['cfg-baidu-key-toggle', 'cfg-baidu-key'],
     ['cfg-metaso-key-toggle', 'cfg-metaso-key'],
+    ['cfg-tavily-key-toggle', 'cfg-tavily-key'],
     ['cfg-custom-sp-key-toggle', 'cfg-custom-sp-key'],
     ['cfg-obtoken-toggle', 'cfg-obtoken'],
     ['cfg-obhttptoken-toggle', 'cfg-obhttptoken']
@@ -518,9 +539,16 @@ function bindSettingsEvents(c) {
     if (btn && input) {
       btn.addEventListener('click', async () => {
         const show = input.type === 'password';
+        if (inputId === 'cfg-tavily-key' && input.dataset.edited) {
+          input.type = show ? 'text' : 'password';
+          btn.textContent = show ? '隐藏' : '显示';
+          return;
+        }
         // 所有 Key 统一走 fetchRealKey：/api/config 里的密钥都是脱敏的，
         // 明文只能向后端专用端点取（服务端会校验请求来源）。
+        const revision = searchSelectionRevision;
         const real = await fetchRealKey(inputId);
+        if (inputId === 'cfg-custom-sp-key' && revision !== searchSelectionRevision) return;
         if (show) {
           // 切到明文：显示真实 Key（若之前是掩码/空占位）
           input.type = 'text';
@@ -557,6 +585,7 @@ function bindSettingsEvents(c) {
     'cfg-bocha-key': () => 'bocha',
     'cfg-baidu-key': () => 'baidu',
     'cfg-metaso-key': () => 'metaso',
+    'cfg-tavily-key': () => 'tavily',
     'cfg-custom-sp-key': () => ($('#cfg-searchprovider')?.value || '').startsWith('custom:')
       ? $('#cfg-searchprovider').value
       : null
@@ -570,6 +599,7 @@ function bindSettingsEvents(c) {
     'cfg-bocha-key-clear': 'cfg-bocha-key',
     'cfg-baidu-key-clear': 'cfg-baidu-key',
     'cfg-metaso-key-clear': 'cfg-metaso-key',
+    'cfg-tavily-key-clear': 'cfg-tavily-key',
     'cfg-custom-sp-key-clear': 'cfg-custom-sp-key'
   };
   for (const [btnId, inputId] of Object.entries(SEARCH_KEY_CLEAR_BTN)) {
@@ -597,7 +627,11 @@ function bindSettingsEvents(c) {
             })
           });
         } else {
-          // 内置五家：空串走正常保存链就能清除（sanitize 删掉了掩码、空串覆盖旧值）
+          if (field === 'tavily') {
+            delete input.dataset.edited;
+            if (saving) await saving;
+          }
+          // 内置服务使用空串显式清除已保存的密钥。
           await api('/api/config', { method: 'POST', body: JSON.stringify({ webSearch: { [field]: { apiKey: '' } } }) });
         }
         if (input) { input.value = ''; input.placeholder = '输入新 Key 可替换'; }

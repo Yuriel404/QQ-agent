@@ -980,6 +980,24 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
 .settings-divider { border: none; border-top: 1px dashed var(--bd); margin: 18px 0; }
 .setsub { margin: 0 0 16px; font-size: 12.5px; color: var(--tx3); }
 
+@media (max-width: 680px) {
+  #view-settings.active { flex-direction: column; }
+  .settings-sidebar {
+    width: 100%; flex: none; gap: 6px; padding: 8px 12px;
+    border-right: 0; border-bottom: 1px solid var(--bd);
+  }
+  .settings-runstate {
+    flex-direction: row; align-items: center; flex-wrap: wrap;
+    gap: 4px 12px; margin-bottom: 0; padding: 6px 9px;
+  }
+  .settings-runstate .muted { min-width: 0; overflow-wrap: anywhere; }
+  .settings-menu { flex-direction: row; overflow-x: auto; }
+  .settings-menu-item { flex: none; width: auto; white-space: nowrap; }
+  .settings-pane { padding: 14px 12px 26px; }
+  .settings-pane .field { min-width: min(220px, 100%); }
+  .settings-pane .field input { min-width: 0; }
+}
+
 /* 设置折叠卡（下拉收纳） */
 .setcard {
   background: var(--bg1); border: 1px solid var(--bd); border-radius: var(--r-md);
@@ -1326,6 +1344,104 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
   padding-top: 10px; border-top: 1px solid var(--bd); flex-shrink: 0;
 }
 .model-modal-foot:empty { display: none; }
+/* 搜索池沿用设置卡、状态徽标和表单控件，只有列表布局由弹窗自行控制。 */
+:is(.pool-manager-overlay, .pool-editor-overlay) .model-modal {
+  padding: 0; gap: 0; background: var(--bg1);
+}
+.pool-manager-overlay .model-modal { width: 740px; }
+.pool-editor-overlay .model-modal { width: 470px; }
+:is(.pool-manager-overlay, .pool-editor-overlay) .model-modal-head {
+  align-items: center; padding: 14px 18px; background: var(--bg2);
+  border-bottom: 1px solid var(--bd); font-size: 15px;
+}
+:is(.pool-manager-overlay, .pool-editor-overlay) .model-modal-body {
+  padding: 16px 18px; overscroll-behavior: contain;
+}
+:is(.pool-manager-overlay, .pool-editor-overlay) .model-modal-foot {
+  align-items: center; padding: 10px 18px; background: var(--bg2);
+}
+.pool-footer-status { margin: 0 auto 0 0; min-width: 0; color: var(--tx2); font-size: 12px; overflow-wrap: anywhere; }
+:is(.pool-manager-overlay, .pool-editor-overlay) .model-modal-foot button { flex-shrink: 0; }
+#pool-content { display: grid; gap: 12px; }
+.pool-section {
+  min-width: 0; padding: 13px 15px; border: 1px solid var(--bd); border-radius: var(--r-md);
+  background: var(--bg2);
+}
+.pool-section-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px;
+}
+.pool-section-head h3 { font-size: 13.5px; line-height: 1.5; }
+:is(.pool-section, .pool-editor-grid) :is(label, .hint) { color: var(--tx2); }
+.pool-strategy-grid, .pool-editor-grid { display: grid; align-items: end; gap: 12px; }
+.pool-strategy-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+.pool-editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pool-editor-grid .pool-wide { grid-column: 1 / -1; }
+:is(.pool-section, .pool-editor-grid) .field { margin: 0; min-width: 0; }
+#pool-chain-add { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; }
+#pool-chain-add .field { flex: 1 1 11rem; }
+.pool-route-list + #pool-chain-add { margin-top: 8px; }
+.pool-list { list-style: none; margin: 0; padding: 0; }
+.pool-route-row {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px;
+  align-items: center; padding: 7px 0;
+}
+.pool-route-row + .pool-route-row, .pool-key-row + .pool-key-row { border-top: 1px solid var(--bd); }
+.pool-route-rank {
+  display: grid; place-items: center; width: 24px; height: 24px;
+  background: var(--bg1); border: 1px solid var(--bd2); border-radius: var(--r-xs);
+  font: 12px var(--font-mono); color: var(--tx2);
+}
+.pool-route-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.pool-route-actions { display: flex; align-items: center; gap: 5px; }
+.pool-route-actions [data-chain="up"], .pool-route-actions [data-chain="down"] { min-width: 28px; padding: 0 6px; }
+.pool-key-row {
+  --more-width: 30px;
+  position: relative; display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, .5fr) auto var(--more-width);
+  align-items: start; gap: 6px 8px; padding: 10px 0;
+}
+.pool-key-main { min-width: 0; overflow-wrap: anywhere; }
+.pool-key-title { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 13px; }
+.pool-key-meta { margin-top: 2px; font-size: 12px; color: var(--tx2); }
+.pool-usage {
+  display: grid; align-self: center; min-width: 0; gap: 4px; font-size: 12px; color: var(--tx2);
+  font-variant-numeric: tabular-nums;
+}
+.pool-usage progress { appearance: none; width: 100%; height: 4px; border: 0; background: var(--bd2); border-radius: var(--r-full); overflow: hidden; }
+.pool-usage progress::-webkit-progress-bar { background: var(--bd2); }
+.pool-usage progress::-webkit-progress-value { background: var(--ac); border-radius: var(--r-full); }
+.pool-usage progress::-moz-progress-bar { background: var(--ac); border-radius: var(--r-full); }
+.pool-key-more { grid-column: 1 / -1; }
+/* 把更多按钮留在行尾；展开的工具栏独占一行，避免挤窄名称和用量。 */
+.pool-key-more:not([open]), .pool-key-more[open] > summary { position: absolute; right: 0; top: 10px; }
+.pool-key-more > summary { display: grid; place-items: center; width: var(--more-width); list-style: none; cursor: pointer; }
+.pool-key-more[open] > summary { background: var(--hover); color: var(--tx); }
+.pool-key-more > summary::-webkit-details-marker { display: none; }
+.pool-more-actions {
+  display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px;
+  padding: 6px; background: var(--bg1); border-radius: var(--r-sm);
+}
+.pool-section .pool-empty { color: var(--tx2); font-size: 12px; }
+#pool-key-form { display: flex; flex-direction: column; min-height: 0; }
+#pool-key-form [hidden] { display: none; }
+@media (max-width: 620px) {
+  :is(.pool-manager-overlay, .pool-editor-overlay) { padding: 10px; }
+  :is(.pool-manager-overlay, .pool-editor-overlay) .model-modal { max-width: 100%; max-height: 94vh; max-height: 94dvh; }
+  :is(.pool-manager-overlay, .pool-editor-overlay) .model-modal-body { padding: 12px; }
+  .pool-section { padding: 12px; }
+  .pool-strategy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pool-strategy-grid > button { grid-column: 1 / -1; justify-self: end; }
+  .pool-key-row { grid-template-columns: minmax(0, 1fr) auto var(--more-width); gap: 5px 6px; }
+  .pool-key-main { grid-column: 1; }
+  .pool-usage { grid-column: 1 / -1; grid-row: 2; }
+  .pool-key-edit { grid-column: 2; grid-row: 1; }
+  .pool-route-actions .btn, .pool-key-edit, .pool-key-more .btn { min-height: 32px; }
+  .pool-route-actions [data-chain] { min-width: 32px; }
+}
+@media (max-width: 400px) {
+  .pool-editor-grid { grid-template-columns: minmax(0, 1fr); }
+  .pool-route-row { grid-template-columns: 22px minmax(0, 1fr) auto; gap: 6px; }
+}
 @media (max-width: 560px) {
   .model-modal { padding: 12px; }
   .model-modal-body { flex-direction: column; }
