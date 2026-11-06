@@ -93,6 +93,9 @@ plugins/my-plugin/            skills/my-skill/
 - **热重载默认开启**：目录放进去就生效，无需重启（`config.extensions.hotReload` 可关；
   等价于"任意落地的 JS 会被执行"，共享机器建议关掉）。
 - 架构总览见 [doc/extend_development/skill-system.md](doc/extend_development/skill-system.md)。
+
+在项目根目录运行 `node scripts/new-skill.mjs my-skill --name "我的技能"`，会生成 `skills/my-skill/`。在 `index.js` 的 `setup(api)` 中用 `api.registerTool(...)` 注册工具，将业务逻辑填入工具的 `execute`。在 Web UI 的「技能」页点「刷新」，确认已启用且显示「生效中」。脚手架生成的示例工具名为 `my-skill__run`。
+
 ## 安装与使用
 **三步搞定**（推荐）：
 ```bash
