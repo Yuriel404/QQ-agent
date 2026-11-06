@@ -13,9 +13,10 @@
 //
 // 运行：node test/coverage-wiring.mjs
 import fs from 'node:fs';
+import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ROOT, bootApp, createChecker } from './_harness.mjs';
+import { ROOT, bootApp, createChecker, waitFor } from './_harness.mjs';
 
 const c = createChecker('界面接线（真实 DOM）');
 
@@ -151,6 +152,67 @@ for (let i = 0; i < 40; i++) {
 const cov = {};
 cov['首屏'] = scan('首屏');
 
+await c.check('从首屏进入人设设置，保存、取消、清空和预览均按作用范围生效', async () => {
+  const originalAllow = ctx.app.getConfig().allow;
+  const originalAlias = ctx.app.getConfig().persona.botName;
+  ctx.app.updateConfig({ allow: { groups: [], private: [] }, persona: { chatTexts: { 'private:999': '之前配置的人设' } } });
+  for (const key of ['group:125', 'private:125']) ctx.app.store.appendSelf(key, { text: '存档', ts: Date.now() });
+  const find = (selector) => window.document.querySelector(selector);
+  const persona = () => ctx.app.getConfig().persona;
+  const select = (key) => {
+    const picker = find('#persona-chat-picker');
+    picker.value = key;
+    assert.equal(picker.value, key);
+    picker.dispatchEvent(new window.Event('change', { bubbles: true }));
+  };
+  const edit = async (value, { expect = '', cancel = false } = {}) => {
+    find('#edit-persona').click();
+    const modal = find('.model-modal-overlay:not(.closing)');
+    const textarea = modal.querySelector('textarea');
+    assert.equal(textarea.value, expect);
+    textarea.value = value;
+    modal.querySelector(cancel ? '#persona-cancel' : '#persona-save').click();
+    await waitFor(() => !modal.isConnected, 4000, '关闭人设编辑框');
+  };
+  const globalText = '全局\n</textarea><i id="persona-injection">纯文本</i>';
+  try {
+    find('.tab[data-tab="settings"]').click();
+    (await waitFor(() => find('[data-section="persona"]'))).click();
+    await waitFor(() => find('#persona-chat-picker option[value="private:125"]'), 8000, '首次加载已有会话');
+    assert.ok(find('#persona-chat-picker option[value="private:999"]'));
+    await edit(globalText);
+    assert.equal(persona().customText, globalText);
+    assert.equal(find('#settings-form .persona-text').textContent, globalText);
+    assert.equal(find('#persona-injection'), null);
+    select('group:125');
+    assert.equal(find('#settings-form .persona-text').textContent, globalText);
+    // 模拟另一控制台写入。保存该群必须保留页面初次加载后发生的修改。
+    ctx.app.updateConfig({ persona: { chatTexts: { 'private:999': '另一窗口的修改' } } });
+    await edit('群里的人设');
+    select('private:125');
+    await edit('私聊的人设');
+    await edit('丢弃这个草稿', { expect: '私聊的人设', cancel: true });
+    assert.equal(persona().chatTexts['private:125'], '私聊的人设');
+    select('group:125');
+    const preview = find('#persona-prompt-preview');
+    preview.open = true;
+    await waitFor(() => preview.querySelector('pre').textContent.includes('群里的人设'), 4000, '群聊系统提示词预览');
+    assert.ok(!preview.textContent.includes('私聊的人设'));
+    await edit('', { expect: '群里的人设' });
+    assert.equal(persona().chatTexts['group:125'], undefined);
+    assert.equal(find('#settings-form .persona-text').textContent, globalText);
+    select('');
+    await edit('', { expect: globalText });
+    assert.equal(persona().customText, '');
+    assert.equal(persona().chatTexts['private:125'], '私聊的人设');
+    assert.equal(persona().chatTexts['private:999'], '另一窗口的修改');
+    assert.equal(persona().botName, originalAlias);
+  } finally {
+    ctx.app.updateConfig({ allow: originalAllow, persona: { customText: '', chatTexts: { 'private:999': '', 'private:125': '', 'group:125': '' } } });
+    for (const key of ['group:125', 'private:125']) ctx.app.store.clearChat(key);
+  }
+});
+
 // ── 1) 逐个页签（点真实按钮）────────────────────────────────────────────
 // 注意：8 个 view 都是 index.html 里的静态节点，切页签不会新建元素
 //（它们在首屏那轮就已全部扫到）。所以这里统计"访问过的页签数"，而不是新增元素数。
@@ -197,9 +259,6 @@ const MODALS = [
   ['本地技能创建指南', 'openCreateModuleGuide', ['skill'], null],
   ['调用明细', 'openToolBreakdown', [], null],
   ['用量下钻', 'openUsageBreakdown', ['model', 'm0'], null],
-  ['人设选择器', 'openPersonaPicker', [], 'persona'],
-  ['人设新建', 'openPersonaCreateModal', [], 'persona'],
-  ['全局人设设置', 'openGlobalPersonaModal', [], 'persona'],
   ['模型选择器', 'openModelPicker', [], 'api'],
   ['记忆模型选择器', 'openMemoryModelPicker', [], 'memory'],
   ['模型添加', 'openModelAddModal', ['https://example.com/v1', 'k', ['m1', 'm2']], 'api'],

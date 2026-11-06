@@ -42,10 +42,16 @@ function bindSettingsEvents(c) {
   // 撤销快照：进入本设置区块时拍一份配置；有改动后显示「撤销」按钮，
   // 点击 = 整份配置回滚到快照（设置是即时生效的，回滚与改动之间发生的一切不负责）。
   const sectionSnapshot = structuredClone(state.config || {});
+  // 人设由独立编辑框按作用域保存；撤销其他设置时不要带回旧人设。
+  if (sectionSnapshot.persona) {
+    delete sectionSnapshot.persona.customText;
+    delete sectionSnapshot.persona.chatTexts;
+  }
   let undoBtn = null;
 
   function markDirty(el) {
-    const block = el?.closest?.('.field, .checkbox-row, .tier-param, .price-card, .tool-card, .settings-runstate, .prompt-preview-card, .persona-per-chat, .persona-chat-btn');
+    if (el?.id === 'persona-chat-picker') return;
+    const block = el?.closest?.('.field, .checkbox-row, .tier-param, .price-card, .tool-card, .settings-runstate, .prompt-preview-card');
     if (block) dirtyEls.add(block);
     showUndoBtn();
     scheduleSave();
@@ -158,6 +164,30 @@ function bindSettingsEvents(c) {
   settingsFlushHandlers = [];
   const flush = () => flushSave();
   settingsFlushHandlers.push(flush);
+
+  const personaPicker = $('#persona-chat-picker');
+  if (personaPicker) {
+    personaPicker.addEventListener('change', () => {
+      state.personaChatKey = personaPicker.value;
+      renderSettings();
+    });
+    $('#edit-persona').addEventListener('click', () => {
+      openPersonaEditor(personaPicker.value, personaPicker.selectedOptions[0].textContent);
+    });
+    const preview = $('#persona-prompt-preview');
+    preview.addEventListener('toggle', async () => {
+      if (!preview.open) return;
+      const pre = preview.querySelector('pre');
+      pre.textContent = '正在加载…';
+      try {
+        const query = personaPicker.value ? '?chatKey=' + encodeURIComponent(personaPicker.value) : '';
+        const result = await api('/api/prompt-preview' + query);
+        pre.textContent = result.systemPrompt;
+      } catch (err) {
+        pre.textContent = `预览失败：${err.message}`;
+      }
+    });
+  }
 
   // ── Skill 开关 ──
   // 与工具开关的关键区别：Skill 开关**立即生效并落盘**，不走"未保存更改"流程。
@@ -818,96 +848,11 @@ function bindSettingsEvents(c) {
   }
   applyShowVision();
 
-  // ── 人设区块事件 ──
-  const personaPick = $('#cfg-persona-pick');
-  function currentPersonaId() {
-    const roleText = $('#cfg-roletext')?.value ?? '';
-    const found = Object.entries(state.personaTemplates || {}).find(([, p]) => p.text === roleText);
-    return found ? found[0] : '';
-  }
-  function syncPersonaButtons(animate = true) {
-    const id = currentPersonaId();
-    const tpl = state.personaTemplates[id];
-    const isCustom = id.startsWith('custom_');
-    const delBtn = $('#del-persona-btn');
-    if (delBtn) {
-      if (isCustom) uiShow(delBtn, () => delBtn.classList.remove('hidden'), animate);
-      else uiHide(delBtn, () => delBtn.classList.add('hidden'), animate);
-    }
-    const hint = $('#persona-pick-hint');
-    if (hint) hint.textContent = tpl ? (tpl.builtin ? '内置人设' : '自定义人设') : '';
-  }
-  if (personaPick) {
-    personaPick.addEventListener('click', () => openPersonaPicker());
-  }
-  const newPersonaBtn = $('#new-persona-btn');
-  if (newPersonaBtn) newPersonaBtn.addEventListener('click', () => openPersonaCreateModal());
-  const delPersonaBtn = $('#del-persona-btn');
-  if (delPersonaBtn) delPersonaBtn.addEventListener('click', async () => {
-    const id = currentPersonaId();
-    if (!id.startsWith('custom_')) return;
-    const tpl = state.personaTemplates[id];
-    if (!tpl) return;
-    if (!(await uiConfirm(`确定删除自定义人设「${tpl.name}」？`))) return;
-    try {
-      await api(`/api/persona-templates/${id}`, { method: 'DELETE', body: '{}' });
-      $('#cfg-roletext').value = state.personaTemplates.xiaojingyu?.text || '';
-      $('#cfg-customrules').value = '';
-      // 删除 = 表单值被程序化改回默认人设：同样派发 input 触发自动保存，
-      // 否则"删完切走"后配置里还是被删掉的那套角色设定（保存从未发起）。
-      $('#cfg-roletext')?.dispatchEvent(new Event('input', { bubbles: true }));
-      await loadSettings();
-    } catch (e) {
-      $('#persona-pick-hint').textContent = `删除失败：${e.message}`;
-    }
-  });
-  
-  syncPersonaButtons(false);   // 初始装填不播动画（重渲染后是全新节点）
-
   // ── 白名单区块事件 ──
   const pickGroupsBtn = $('#pick-groups-btn');
   if (pickGroupsBtn) pickGroupsBtn.addEventListener('click', () => openWhitelistPicker('groups'));
   const pickFriendsBtn = $('#pick-friends-btn');
   if (pickFriendsBtn) pickFriendsBtn.addEventListener('click', () => openWhitelistPicker('friends'));
-
-  // ── 按会话独立人设 ──
-  // 唯一真相是隐藏 input 里的 JSON（与分群档位滑条同一套做法）：
-  // ── 人设页：统一/分会话切换 + 分会话按钮网格 ──
-  // 统一开关：切显隐（不触发保存——display 切换不是配置变化，真正的值在 checkbox 上）。
-  const personaUnifiedChk = $('#cfg-persona-unified');
-  if (personaUnifiedChk) personaUnifiedChk.addEventListener('change', () => {
-    const ub = $('#persona-unified-box');
-    const pb = $('#persona-perchat-box');
-    if (ub) {
-      if (personaUnifiedChk.checked) uiShow(ub, () => { ub.style.display = ''; });
-      else uiHide(ub, () => { ub.style.display = 'none'; });
-    }
-    if (pb) {
-      if (personaUnifiedChk.checked) uiHide(pb, () => { pb.style.display = 'none'; });
-      else uiShow(pb, () => { pb.style.display = ''; });
-    }
-  });
-  // 分会话按钮：点开独立人设模态框（写回隐藏 JSON → 自动保存）
-  // root 判空：DOM 测试环境里 #persona-perchat-box 可能不在场（统一模式渲染时它存在，
-  // 但旧测试快照可能没这个节点——$$ 对 null root 直接抛错）
-  const perChatBox = $('#persona-perchat-box');
-  if (perChatBox) $$('.persona-chat-btn', perChatBox).forEach((btn) => {
-    btn.addEventListener('click', () => openPerChatPersonaModal(btn.dataset.chat));
-  });
-  // 分群模式的「全局人设设置」入口：编辑未单独配置会话所跟随的全局字段
-  $('#open-global-persona-btn')?.addEventListener('click', () => openGlobalPersonaModal());
-  // 群名异步补显：按钮文字先显示"群 号"，拉到群名后替换
-  api('/api/onebot/groups').then((d) => {
-    const names = new Map((d.groups || []).map((g) => [String(g.id), g.name]));
-    if (perChatBox) $$('.persona-chat-btn', perChatBox).forEach((btn) => {
-      const m = /^group:(\d+)$/.exec(String(btn.dataset.chat || ''));
-      if (!m) return;
-      const n = names.get(m[1]);
-      if (!n) return;
-      const hasDot = btn.textContent.includes('●');
-      btn.textContent = hasDot ? `${n} ●` : n;
-    });
-  }).catch(() => {});
 
   // ── 检查更新（桌面端区块） ──
   const curVerEl = $('#update-current');

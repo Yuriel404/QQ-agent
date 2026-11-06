@@ -282,12 +282,11 @@ QQ_AGENT_DEV=1 npm run server
 | 给别的 Skill 提供可复用的实现 | `providers` | 对方按能力名软依赖你 |
 | 实现某个**核心已在找**的标准能力 | `providers` | 核心会主动来找（见 8.4 的清单） |
 
-**核心当前实际消费的能力名（14 个，已核对源码）**：
+**核心消费的能力名**：
 
 ```
 video.frames              video-reader.js
 chat.ban-state            orchestrator.js
-message.owner-check       orchestrator.js
 message.speaker-format    prompt.js
 message.inline-at-normalize  onebot.js
 image.mime-support        tools.js
@@ -659,7 +658,6 @@ tool.guard
 | `video.frames.available` | `{ ok, reason }` | 视频路由判定 |
 | `media.transcribe` | 转写结果 | 语音理解 |
 | `chat.ban-state` | 禁言状态 | 运行前跳过 |
-| `message.owner-check` | 是否主人 | 主人专属逻辑 |
 | `sticker.annotate` / `sticker.annotate-batch` | 表情标注 | 表情库 |
 | `image.random` | 随机图 | 图片工具 |
 | `media.download.bilibili` / `media.download.douyin` | 下载结果 | 视频下载 |
@@ -733,7 +731,7 @@ export const hooks = {
 | `ctx.chatId` | string | 群号或 QQ 号 |
 | `ctx.selfId` | string | 机器人自己的 QQ 号 |
 | `ctx.selfNickname` | string | 机器人自己的昵称 |
-| `ctx.botName` | string | 人设里配置的机器人名字 |
+| `ctx.botName` | string | 当前 QQ 机器人账号的昵称 |
 | `ctx.onebot` | object | OneBot 客户端，见 10.2 |
 | `ctx.store` | object | 消息存档，见 10.3 |
 | `ctx.memory` | object | 长期记忆，见 10.4 |

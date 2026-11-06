@@ -128,12 +128,14 @@ function renderSettings() {
       } catch { /* 恢复失败不致命 */ }
     }
   }
-  // 群名补底（一次性）：分群按钮/活跃设置下拉第一次渲染时 state.chats 可能还没到
-  // （switchTab 只在列表为空时才拉）。这里发现为空就补拉，到达后重渲染一次。
+  // 直接进设置页时还没有存档列表。拿到会话名称后刷新一次作用范围选择器。
   if (!(state.chats || []).length && !renderSettings.__chatsFetch) {
     renderSettings.__chatsFetch = true;
     api('/api/chats').then((d) => {
-      if ((d.chats || []).length && state.tab === 'settings') renderSettings();
+      if (!(state.chats || []).length && d.chats?.length) {
+        state.chats = d.chats;
+        if (state.tab === 'settings') renderSettings();
+      }
     }).catch(() => {}).finally(() => { renderSettings.__chatsFetch = false; });
   }
 }
@@ -396,278 +398,34 @@ function renderMemorySettingsSection(c) {
 }
 
 function renderPersonaSection(c) {
-  // 统一人设开关：开启（默认）= 所有用同一套全局人设（下方完整编辑器）；
-  // 关闭 = 每个白名单会话一个按钮，点开模态框单独编辑（personaByChat）。
-  const unified = c.personaUnified !== false;
-  const perChat = c.personaByChat || {};
-  const allowIds = [
-    ...(c.allow?.groups || []).map((g) => `group:${g}`),
-    ...(c.allow?.private || []).map((p) => `private:${p}`)
-  ].map(String);
-  const extraIds = Object.keys(perChat).filter((id) => !allowIds.includes(id));
-  const chatIds = [...allowIds, ...extraIds];
-
-  const unifiedEditor = `
-    ${renderPersonaPicker(c)}
-    <div class="field-row">
-      <div class="field"><label>机器人名字</label><input type="text" id="cfg-botname" value="${esc(c.persona.botName)}" /></div>
-      <div class="field"><label>群内展示名（可选）</label><input type="text" id="cfg-selfnick" value="${esc(c.persona.selfNickname || '')}" /></div>
-      <div class="field"><label>参与度</label>
-        <select id="cfg-participation">
-          <option value="low" ${c.persona.participation === 'low' ? 'selected' : ''}>安静型</option>
-          <option value="medium" ${c.persona.participation === 'medium' ? 'selected' : ''}>普通群友</option>
-          <option value="high" ${c.persona.participation === 'high' ? 'selected' : ''}>活跃型</option>
-        </select></div>
-    </div>
-    <div class="field"><label>角色设定</label>
-      <textarea id="cfg-roletext" class="persona-role-text" placeholder="例如：你是运维群里的老油条……">${esc(c.persona.roleText || '')}</textarea></div>
-    <div class="field"><label>管理员附加规则（可选，追加到系统提示）</label>
-      <textarea id="cfg-customrules" class="persona-role-text" style="min-height:100px">${esc(c.persona.customRules || '')}</textarea></div>
-    <div class="field">
-      <label>系统提示词覆盖（高级 · 可选）</label>
-      <textarea id="cfg-sysprompt" class="persona-role-text" style="min-height:120px" placeholder="留空 = 使用内置默认系统提示词（含安全规则/工具协议/反AI味等）。填写后将整体替换默认行为准则。">${esc(c.persona.systemPromptOverride || '')}</textarea>
-      <div class="hint">
-        ⚠️ 高级功能：填写后会<b>整体替换</b>内置系统提示词，默认的安全规则、工具协议、反 AI 味等约束全部失效（需自行在覆盖文本里写明）。
-        可用占位符：<code>{botName}</code> <code>{roleText}</code> <code>{participation}</code>。留空则完全不影响现有行为。
-      </div>
-    </div>`;
-
-  // 分会话模式：按钮网格（白名单 ∪ 已配置过的会话）
-  const chatButtons = chatIds.map((chatKey) => {
-    const conf = perChat[chatKey] || {};
-    const hasCustom = Boolean(conf.roleText || conf.participation || conf.customRules || conf.systemPromptOverride);
-    const title = formatChatTitle(chatKey, extraIds.includes(chatKey) ? '' : chatNameOf(chatKey));
-    return `
-      <button class="btn persona-chat-btn ${hasCustom ? 'has-custom' : ''}" data-chat="${esc(chatKey)}" title="${esc(title)}的人设">
-        ${esc(title)}${hasCustom ? ' ●' : ''}
-      </button>`;
-  }).join('');
-
-  return `
-    <h3>人设</h3>
-    <div class="checkbox-row"><input type="checkbox" id="cfg-persona-unified" ${unified ? 'checked' : ''} />
-      <label for="cfg-persona-unified">为所有的群聊/私聊使用同一个人设</label></div>
-    <div class="hint" style="margin-bottom:12px">${unified
-      ? '所有会话共用下方这一套人设。'
-      : '每个会话独立人设：点按对应按钮弹窗编辑（● = 已配置独立人设；未配置的跟随全局人设的字段）。机器人名字/群内展示名是账号身份，只能全局设置。'}</div>
-    <div id="persona-unified-box" style="${unified ? '' : 'display:none'}">
-      ${unifiedEditor}
-    </div>
-    <div id="persona-perchat-box" style="${unified ? 'display:none' : ''}">
-      <div class="field" style="margin-bottom:10px">
-        <button class="btn" id="open-global-persona-btn">⚙ 全局人设设置（未单独配置的会话用这套）</button>
-      </div>
-      <div class="persona-chat-grid">${chatButtons || '<div class="hint">（白名单为空——先在「聊天白名单」里添加群聊/私聊）</div>'}</div>
-    </div>`;
-}
-
-/**
- * 「全局人设设置」模态框（2026-09-18）：统一人设关闭（分群模式）时，
- * persona 主编辑器不在场 —— 没有独立人设的会话跟随的全局字段就没了编辑入口。
- * 这里弹出同款字段（选择人设 / 参与度 / 角色设定 / 附加规则 / 系统提示覆盖 /
- * 机器人名字 / 群内展示名），保存直接 POST /api/config 的 persona 补丁。
- */
-function openGlobalPersonaModal() {
-  const c = state.config || {};
-  const per = c.persona || {};
-  const overlay = modelModalShell({
-    head: '全局人设设置',
-    body: `
-      <div style="display:flex;gap:8px;margin-bottom:8px">
-        <input type="text" id="gp-pick" readonly placeholder="点击选择人设" value="${esc(Object.values(state.personaTemplates || {}).find((p) => p.text === (per.roleText || ''))?.name || '')}" style="flex:1;cursor:pointer" />
-        <button class="btn btn-small" id="gp-new-btn">＋ 添加人设</button>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>机器人名字</label><input type="text" id="gp-botname" value="${esc(per.botName || '')}" /></div>
-        <div class="field"><label>群内展示名（可选）</label><input type="text" id="gp-selfnick" value="${esc(per.selfNickname || '')}" /></div>
-        <div class="field"><label>参与度</label>
-          <select id="gp-participation">
-            <option value="low" ${per.participation === 'low' ? 'selected' : ''}>安静型</option>
-            <option value="medium" ${per.participation === 'medium' ? 'selected' : ''}>普通群友</option>
-            <option value="high" ${per.participation === 'high' ? 'selected' : ''}>活跃型</option>
-          </select></div>
-      </div>
-      <div class="field"><label>角色设定</label>
-        <textarea id="gp-roletext" class="persona-role-text" style="min-height:180px" placeholder="例如：你是运维群里的老油条……">${esc(per.roleText || '')}</textarea></div>
-      <div class="field"><label>管理员附加规则（可选，追加到系统提示）</label>
-        <textarea id="gp-customrules" class="persona-role-text" style="min-height:80px">${esc(per.customRules || '')}</textarea></div>
-      <div class="field"><label>系统提示词覆盖（高级 · 可选）</label>
-        <textarea id="gp-sysprompt" class="persona-role-text" style="min-height:80px" placeholder="留空 = 使用内置默认系统提示词">${esc(per.systemPromptOverride || '')}</textarea></div>
-      <div class="hint" style="margin-top:6px">未配置独立人设的群聊/私聊全部使用这套全局字段。</div>`,
-    foot: `<button class="btn" id="gp-cancel">取消</button>
-           <button class="btn btn-primary" id="gp-save">保存</button>`
-  });
-
-  // 选择人设：与统一编辑器同一份模板列表
-  overlay.querySelector('#gp-pick').addEventListener('click', () => {
-    const entries = Object.entries(state.personaTemplates || {});
-    if (!entries.length) return;
-    const pickOverlay = modelModalShell({
-      head: '选择人设',
-      body: `<div class="model-modal-right" style="flex:1">
-        ${entries.map(([id, p]) => `
-          <div class="mm-model" data-id="${esc(id)}">
-            <span class="mm-check">${p.text === overlay.querySelector('#gp-roletext').value ? '✓' : ''}</span>
-            <span>${esc(p.name)}</span>
-            <span class="muted" style="font-size:11px">${p.builtin ? '内置' : '自定义'}</span>
-          </div>`).join('')}
-      </div>`,
-      foot: `<button class="btn" id="pp-cancel">取消</button>`
-    });
-    pickOverlay.querySelectorAll('.mm-model').forEach((el) => {
-      el.addEventListener('click', () => {
-        const tpl = state.personaTemplates[el.dataset.id];
-        if (tpl) {
-          overlay.querySelector('#gp-roletext').value = tpl.text;
-          overlay.querySelector('#gp-customrules').value = tpl.customRules || '';
-          overlay.querySelector('#gp-pick').value = tpl.name;
-        }
-        closeModelModal(pickOverlay);
-      });
-    });
-    pickOverlay.querySelector('#pp-cancel').addEventListener('click', () => closeModelModal(pickOverlay));
-  });
-  overlay.querySelector('#gp-new-btn').addEventListener('click', () => {
-    openPersonaCreateModal();
-  });
-
-  overlay.querySelector('#gp-cancel').addEventListener('click', () => closeModelModal(overlay));
-  overlay.querySelector('#gp-save').addEventListener('click', async () => {
-    const patch = {
-      persona: {
-        ...(c.persona || {}),
-        botName: overlay.querySelector('#gp-botname').value.trim() || '小鲸鱼',
-        selfNickname: overlay.querySelector('#gp-selfnick').value.trim(),
-        participation: overlay.querySelector('#gp-participation').value,
-        roleText: overlay.querySelector('#gp-roletext').value.trim(),
-        customRules: overlay.querySelector('#gp-customrules').value.trim(),
-        systemPromptOverride: overlay.querySelector('#gp-sysprompt').value.trim()
-      }
-    };
-    try {
-      await api('/api/config', { method: 'POST', body: JSON.stringify(patch) });
-      closeModelModal(overlay);
-      loadSettings();
-    } catch (e) {
-      alert(`保存全局人设失败：${e.message}`);
-    }
-  });
-}
-
-/**
- * 分会话人设编辑模态框：与统一编辑器同款字段（人设选择/添加/机器人名字沿用全局说明/参与度/
- * 角色设定/附加规则/系统提示词覆盖）。保存按钮直接 POST /api/config 落盘
- * （personaByChat 整体 __replace__），不经过表单自动保存链。
- */
-function openPerChatPersonaModal(chatKey) {
-  const conf = (state.config?.personaByChat || {})[chatKey] || {};
-  const chatName = formatChatTitle(chatKey, chatNameOf(chatKey));
-  const overlay = modelModalShell({
-    head: `${chatName} 的独立人设`,
-    body: `
-      <div style="display:flex;gap:8px;margin-bottom:8px">
-        <input type="text" id="pcp-pick" readonly placeholder="点击选择人设" value="${esc(conf.roleText ? (Object.values(state.personaTemplates || {}).find((p) => p.text === conf.roleText)?.name || '自定义') : '')}" style="flex:1;cursor:pointer" />
-        <button class="btn btn-small" id="pcp-new-btn">＋ 添加人设</button>
-      </div>
-      <div class="field"><label>参与度（留空跟随全局）</label>
-        <select id="pcp-participation">
-          <option value="" ${!conf.participation ? 'selected' : ''}>跟随全局</option>
-          <option value="low" ${conf.participation === 'low' ? 'selected' : ''}>安静型</option>
-          <option value="medium" ${conf.participation === 'medium' ? 'selected' : ''}>普通群友</option>
-          <option value="high" ${conf.participation === 'high' ? 'selected' : ''}>活跃型</option>
-        </select></div>
-      <div class="field"><label>角色设定（留空跟随全局）</label>
-        <textarea id="pcp-roletext" class="persona-role-text" style="min-height:180px" placeholder="留空 = 用全局人设的角色设定">${esc(conf.roleText || '')}</textarea></div>
-      <div class="field"><label>管理员附加规则（可选）</label>
-        <textarea id="pcp-customrules" style="min-height:80px" placeholder="可选：追加到系统提示的规则（留空 = 用全局）">${esc(conf.customRules || '')}</textarea></div>
-      <div class="field"><label>系统提示词覆盖（高级 · 可选）</label>
-        <textarea id="pcp-sysprompt" style="min-height:80px" placeholder="可选：整体替换系统提示（留空 = 用全局）">${esc(conf.systemPromptOverride || '')}</textarea></div>
-      <div class="hint" style="margin-top:6px">机器人名字/群内展示名不按会话变化（账号身份，改了会与 @ 判定对不上），在统一人设里设置。</div>`,
-    foot: `<button class="btn" id="pcp-clear">清空独立人设</button>
-           <button class="btn" id="pcp-cancel">取消</button>
-           <button class="btn btn-primary" id="pcp-save">保存</button>`
-  });
-
-  // 选择人设：复用人设模板列表
-  overlay.querySelector('#pcp-pick').addEventListener('click', () => {
-    const entries = Object.entries(state.personaTemplates || {});
-    if (!entries.length) return;
-    const pickOverlay = modelModalShell({
-      head: '选择人设',
-      body: `<div class="model-modal-right" style="flex:1">
-        ${entries.map(([id, p]) => `
-          <div class="mm-model" data-id="${esc(id)}">
-            <span class="mm-check">${p.text === overlay.querySelector('#pcp-roletext').value ? '✓' : ''}</span>
-            <span>${esc(p.name)}</span>
-            <span class="muted" style="font-size:11px">${p.builtin ? '内置' : '自定义'}</span>
-          </div>`).join('')}
-      </div>`,
-      foot: `<button class="btn" id="pp-cancel">取消</button>`
-    });
-    pickOverlay.querySelectorAll('.mm-model').forEach((el) => {
-      el.addEventListener('click', () => {
-        const tpl = state.personaTemplates[el.dataset.id];
-        if (tpl) {
-          overlay.querySelector('#pcp-roletext').value = tpl.text;
-          overlay.querySelector('#pcp-customrules').value = tpl.customRules || '';
-          overlay.querySelector('#pcp-pick').value = tpl.name;
-        }
-        closeModelModal(pickOverlay);
-      });
-    });
-    pickOverlay.querySelector('#pp-cancel').addEventListener('click', () => closeModelModal(pickOverlay));
-  });
-  overlay.querySelector('#pcp-new-btn').addEventListener('click', () => {
-    // 复用统一编辑器的添加流程：加完模板直接填进本会话的角色设定
-    openPersonaCreateModal();
-  });
-
-  // 直接 POST 落盘：不走"写隐藏 JSON + 等表单链保存"的老路。
-  // 老路的两个坑（2026-09-17 用户实测）：
-  //   1. modal 挂在 body 下、不在 #settings-form 内，dispatchEvent(change) 冒泡
-  //      到不了 form 的委托监听 —— 从来没触发过自动保存；
-  //   2. 就算触发了，随后的 loadSettings() 重建表单 DOM，隐藏 input 被重渲染成
-  //      GET 回来的旧值，用户刚写的条目被无声丢弃 → 重开 modal 一片空白。
-  const saveToMap = async (entry) => {
-    const current = state.config?.personaByChat || {};
-    const next = { ...current };
-    if (entry) next[chatKey] = entry; else delete next[chatKey];
-    try {
-      const r = await api('/api/config', {
-        method: 'POST',
-        body: JSON.stringify({ personaByChat: { __replace__: next } })
-      });
-      if (r?.config) state.config = r.config;
-    } catch (e) {
-      alert(`保存独立人设失败：${e?.message || e}`);
-      throw e;
-    }
+  const { customText = '', chatTexts = {} } = c.persona || {};
+  const chatNames = new Map((state.chats || []).map((chat) => [chat.key, chat.chatName]));
+  const keys = new Set([
+    ...chatNames.keys(), ...Object.keys(chatTexts),
+    ...(c.allow?.groups || []).map((id) => `group:${id}`),
+    ...(c.allow?.private || []).map((id) => `private:${id}`)
+  ]);
+  const options = (kind, label) => {
+    const items = [...keys].filter((key) => /^(group|private):\d+$/.test(key) && key.startsWith(kind + ':'));
+    if (!items.length) return '';
+    return `<optgroup label="${label}">${items.map((key) =>
+      `<option value="${esc(key)}"${key === state.personaChatKey ? ' selected' : ''}>${esc(formatChatTitleWithId(key, chatNames.get(key)))}</option>`
+    ).join('')}</optgroup>`;
   };
-
-  overlay.querySelector('#pcp-cancel').addEventListener('click', () => closeModelModal(overlay));
-  overlay.querySelector('#pcp-clear').addEventListener('click', async () => {
-    try { await saveToMap(null); } catch { return; }
-    closeModelModal(overlay);
-    renderSettings();   // 只刷人设区块（按钮上的 ● 标记），不整页重拉 7 个接口
-  });
-  overlay.querySelector('#pcp-save').addEventListener('click', async () => {
-    const roleText = overlay.querySelector('#pcp-roletext').value.trim();
-    const participation = overlay.querySelector('#pcp-participation').value;
-    const customRules = overlay.querySelector('#pcp-customrules').value.trim();
-    const sysPrompt = overlay.querySelector('#pcp-sysprompt').value.trim();
-    if (!roleText && !participation && !customRules && !sysPrompt) {
-      try { await saveToMap(null); } catch { return; }   // 全空 = 清除独立人设
-    } else {
-      const entry = {};
-      if (roleText) entry.roleText = roleText;
-      if (participation) entry.participation = participation;
-      if (customRules) entry.customRules = customRules;
-      if (sysPrompt) entry.systemPromptOverride = sysPrompt;
-      try { await saveToMap(entry); } catch { return; }
-    }
-    closeModelModal(overlay);
-    renderSettings();
-  });
+  const chatKey = keys.has(state.personaChatKey) ? state.personaChatKey : '';
+  const inherited = chatKey && !chatTexts[chatKey];
+  const effective = (chatKey && chatTexts[chatKey]) || customText;
+  return `
+    <h3 id="settings-persona">人设</h3>
+    <p class="setsub">全局人设适用于所有会话。你也可以为某个群聊或私聊单独填写。</p>
+    <div class="field"><label for="persona-chat-picker">适用范围</label>
+      <select id="persona-chat-picker"><option value="">全局</option>${options('group', '群聊')}${options('private', '私聊')}</select>
+    </div>
+    <div class="field"><span>${inherited ? '当前沿用全局人设' : '当前人设'}</span>
+      ${effective ? `<div class="persona-text">${esc(effective)}</div>` : '<div class="hint">尚未设置人设。</div>'}
+    </div>
+    <button type="button" class="btn" id="edit-persona">编辑${chatKey ? '会话' : '全局'}人设</button>
+    <details id="persona-prompt-preview" class="field"><summary>预览系统提示词</summary><pre class="persona-text"></pre></details>`;
 }
 
 function renderAllowSection(c) {
@@ -686,8 +444,7 @@ function renderAllowSection(c) {
     </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-allowallwhenempty" ${c.allowAllWhenEmpty === true ? 'checked' : ''} />
       <label for="cfg-allowallwhenempty">白名单留空时允许所有会话</label></div>
-    <div class="hint">说明：勾选后，若上方两个列表都为空，机器人会在<b>所有</b>群聊和私聊中运行；只要填了任意一项，就只按名单过滤。</div>
-    <div class="hint" style="margin-top:8px">按会话的独立人设在「人设」页签配置（关闭"统一人设"后出现）。</div>`;
+    <div class="hint">说明：勾选后，若上方两个列表都为空，机器人会在<b>所有</b>群聊和私聊中运行；只要填了任意一项，就只按名单过滤。</div>`;
 }
 
 // 表情包积极程度档位：[值, 显示名]
@@ -1026,7 +783,11 @@ function renderOnebotSection(c) {
           <button class="btn btn-small" id="cfg-obhttptoken-toggle" type="button">显示</button>
         </div></div>
     </div>
-    <div class="hint">改完 OneBot 地址需要重启应用生效；模型/人设/白名单即时生效。</div>`;
+    <div class="field-row">
+      <div class="field"><label for="cfg-botname">机器人别名（可选）</label><input type="text" id="cfg-botname" value="${esc(c.persona?.botName || '')}" /></div>
+      <div class="field"><label for="cfg-selfnick">群内昵称（可选）</label><input type="text" id="cfg-selfnick" value="${esc(c.persona?.selfNickname || '')}" /></div>
+    </div>
+    <div class="hint">当消息缺少 QQ 号标记时，使用这些名字辅助识别 @。OneBot 地址修改后需重启应用。</div>`;
 }
 
 /**

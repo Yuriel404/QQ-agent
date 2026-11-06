@@ -2,7 +2,7 @@
 //
 // 覆盖：util / tier-slider / md-to-plain / config / store / memory / sessions /
 //       reminders / model-prices / safe-fetch / skills(manifest,registry,capabilities,config) /
-//       tool-registry / prompt / holidays / vision-docs / personas / instance-lock /
+//       tool-registry / prompt / holidays / vision-docs / instance-lock /
 //       logger / llm 纯函数 / stickers 纯函数
 //
 // 运行：node test/coverage-offline.mjs
@@ -941,13 +941,13 @@ c.section('13. prompt.js 提示词组装');
   cfg.store.historyCount = 80;
   setRuntimeConfig(cfg);
 
-  await c.check('buildSystemPrompt：包含人设与安全规则等核心模块', () => {
+  await c.check('buildSystemPrompt：包含安全规则与工具协议', () => {
     const sys = buildSystemPrompt();
     assert.ok(typeof sys === 'string' && sys.length > 200, '系统提示不应为空');
     for (const kw of ['安全规则', '工作方式']) {
       assert.ok(sys.includes(kw), `系统提示缺少「${kw}」`);
     }
-    assert.ok(sys.includes('覆盖机'), '应包含机器人名');
+    assert.ok(!sys.includes(cfg.persona.roleText), '不应添加角色卡文本');
   });
 
   await c.check('buildSystemPrompt：不包含已废弃概念', () => {
@@ -1063,7 +1063,7 @@ c.section('13. prompt.js 提示词组装');
 }
 
 // ── 14. 其它纯函数模块 ───────────────────────────────────────────────────
-c.section('14. holidays / vision-docs / personas / instance-lock / logger / llm 纯函数');
+c.section('14. holidays / vision-docs / instance-lock / logger / llm 纯函数');
 {
   const { holidayOn, upcomingHoliday } = await import('../src/holidays.js');
   await c.check('holidays：查询不抛错且返回可判定结构', () => {
@@ -1079,15 +1079,6 @@ c.section('14. holidays / vision-docs / personas / instance-lock / logger / llm 
     assert.ok(builtin && typeof builtin === 'object', '应返回结果表');
     assert.ok(Object.keys(builtin).length >= 0);
     assert.ok(vd.MODEL_DOCS && typeof vd.MODEL_DOCS === 'object', '应有模型文档表');
-  });
-
-  const { PERSONAS } = await import('../src/personas.js');
-  await c.check('personas：内置人设模板存在且字段完整', () => {
-    const ids = Object.keys(PERSONAS);
-    assert.ok(ids.length >= 1, '应至少一个内置人设');
-    for (const id of ids) {
-      assert.ok(PERSONAS[id].name && PERSONAS[id].text, `人设 ${id} 缺少 name/text`);
-    }
   });
 
   const lock = await import('../src/instance-lock.js');

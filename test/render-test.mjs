@@ -139,7 +139,7 @@ const ctx = vm.createContext(sandbox);
     'renderSettingsSection', 'renderApiSection', 'renderSearchSection',
     'renderMemorySettingsSection', 'renderPersonaSection', 'renderAllowSection',
     'renderChatSection', 'renderDesktopSection', 'renderOnebotSection',
-    'renderPersonaPicker', 'renderHealthCard', 'renderSkillsPage', 'renderPluginsPage'
+    'renderHealthCard', 'renderSkillsPage', 'renderPluginsPage'
   ];
 
   // 直接用后端的 DEFAULT_CONFIG 做桩 —— 不要手敲字段名，

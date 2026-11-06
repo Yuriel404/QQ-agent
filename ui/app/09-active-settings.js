@@ -595,7 +595,7 @@ function mountActiveConfigEditor(root) {
           <input class="inp mono tp-count" type="number" id="tp-anchor-extra" min="1" max="50" value="${esc(Number(stNow.promptAnchor?.maxExtraRead ?? 5))}" />
           条已读，超出则整体重置窗口。</div>
         <div class="field"><label>② 的关键词表（每行一个，不区分大小写）</label>
-          <textarea id="tp-keywords" rows="4" placeholder="小鲸鱼&#10;bot">${esc((stNow.keywords || []).join('\n'))}</textarea></div>
+          <textarea id="tp-keywords" rows="4" placeholder="每行一个关键词">${esc((stNow.keywords || []).join('\n'))}</textarea></div>
         <h4 class="tp-h" style="margin-top:12px">被召唤后持续参与</h4>
         <div class="checkbox-row"><input type="checkbox" id="tp-chatactive" ${cNow.chatActive?.enabled === true ? 'checked' : ''} />
           <label for="tp-chatactive">被召唤后可持续参与话题（1/2/3 档触发时生效）</label></div>

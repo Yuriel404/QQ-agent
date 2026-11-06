@@ -341,7 +341,6 @@ export const hooks = {
 | `speaker-identity` | 开 | 稳定 QQ 身份标注、正文 @ 规范化、截断 JSON 参数修补 | `message.speaker-format`、`message.inline-at-normalize` |
 | `thinking-adapters` | 开 | 各厂商思考参数方言识别与翻译、思考内容/token 提取 | `llm.request-params`、`llm.response`、`llm.usage`、`llm.retry-advisor`、`model.thinking-detect` |
 | `video-frames` | 开 | ffmpeg 多帧抽帧（与原生视频输入二选一） | `video.frames`、`video.frames.available` |
-| `owner-identity` | 关 | 只按 QQ 号认定主人；主人专属人设与〔主人〕标注 | `message.owner-check` |
 | `ban-state` | 开 | 记住被禁言的群，跳过白跑的运行 | `chat.ban-state` |
 | `account-pool` | 关 | 多端点按实测延迟加权分配，限流自动冷却 | `llm.endpoint-pick`、`llm.endpoint-feedback`、`llm.endpoint-snapshot` |
 | `speech-to-text` | 关 | 本地 whisper.cpp 把语音转文字 | `media.transcribe` |

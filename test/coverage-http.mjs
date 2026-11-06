@@ -177,39 +177,49 @@ c.section('2. 配置接口');
   );
 }
 
-// ── 3. 人设模板 ──────────────────────────────────────────────────────────
-c.section('3. 人设模板');
-{
-  let customId = null;
-  await c.check('GET /api/persona-templates：含内置模板', async () => {
-    const r = await hit('GET', '/api/persona-templates');
-    assert.equal(r.status, 200);
-    assert.ok(Array.isArray(r.data.templates) && r.data.templates.length > 0, '应返回模板列表');
-    assert.ok(r.data.templates.some((t) => t.builtin), '应含内置模板');
-  });
+c.section('3. 自定义人设与旧配置兼容性');
+await c.check('已移除的模板接口返回 404', async () => {
+  for (const [method, path] of [['GET', '/api/persona-templates'], ['POST', '/api/persona-templates'], ['DELETE', '/api/persona-templates/custom_123']]) {
+    assert.equal((await request(method, path)).status, 404);
+  }
+});
+await c.check('旧客户端提交的人设字段从配置中剔除', async () => {
+  const legacy = { roleText: '旧人设', systemPromptOverride: '旧系统覆盖', customRules: '旧规则', participation: 'high' };
+  assert.equal((await request('POST', '/api/config', { body: {
+    persona: legacy, personaUnified: false, personaByChat: { '456': legacy }, customPersonas: [legacy]
+  } })).status, 200);
+  const config = (await request('GET', '/api/config')).data;
+  for (const key of Object.keys(legacy)) assert.ok(!(key in config.persona));
+  for (const key of ['customPersonas', 'personaByChat', 'personaUnified']) assert.ok(!(key in config));
+});
 
-  await c.check('POST /api/persona-templates：新增自定义模板', async () => {
-    const r = await hit('POST', '/api/persona-templates', { body: { name: '覆盖人设', text: '你是一个覆盖测试人设。' } });
+await c.check('人设保存、预览、会话隔离与清空', async () => {
+  const save = async (persona) => assert.equal((await hit('POST', '/api/config', { body: { persona } })).status, 200);
+  const preview = async (key = '') => {
+    const r = await hit('GET', '/api/prompt-preview' + (key ? '?chatKey=' + encodeURIComponent(key) : ''));
     assert.equal(r.status, 200);
-    assert.equal(r.data.ok, true);
-    const list = await hit('GET', '/api/persona-templates');
-    const found = list.data.templates.find((t) => t.name === '覆盖人设');
-    assert.ok(found, '新增的模板应出现在列表里');
-    customId = found.id;
-  });
-
-  await c.check('POST /api/persona-templates：名称为空被拒绝', async () => {
-    const r = await hit('POST', '/api/persona-templates', { body: { name: '', text: 'x' } });
-    assert.equal(r.status, 400, '空名称应 400');
-  });
-
-  await c.check('DELETE /api/persona-templates/:id：删除自定义模板', async () => {
-    const r = await hit('DELETE', `/api/persona-templates/${customId}`);
-    assert.equal(r.status, 200);
-    const list = await hit('GET', '/api/persona-templates');
-    assert.ok(!list.data.templates.some((t) => t.name === '覆盖人设'), '删除后不应再出现');
-  });
-}
+    return r.data.systemPrompt;
+  };
+  const globalText = '自设全局：第一行\n第二行';
+  const groupText = '自设群组：单独使用';
+  await save({ customText: globalText, chatTexts: { 'group:456': groupText } });
+  const saved = JSON.parse(fs.readFileSync(path.join(ctx.dataDir, 'config.json'), 'utf8')).persona;
+  assert.equal(saved.customText, globalText);
+  assert.equal(saved.chatTexts['group:456'], groupText);
+  const forGroup = await preview('group:456');
+  assert.equal(forGroup.split(groupText).length, 2);
+  assert.ok(!forGroup.includes(globalText));
+  assert.ok(forGroup.includes('安全规则') && forGroup.includes('send_message'));
+  const forPrivate = await preview('private:456');
+  assert.ok(forPrivate.includes(globalText) && !forPrivate.includes(groupText));
+  assert.ok((await preview()).includes(globalText));
+  await save({ chatTexts: { 'group:456': '' } });
+  const inherited = await preview('group:456');
+  assert.ok(inherited.includes(globalText) && !inherited.includes(groupText));
+  await save({ customText: '' });
+  const cleared = await preview('group:456');
+  assert.ok(!cleared.includes(globalText) && !cleared.includes(groupText));
+});
 
 // ── 4. Skill / 工具 ──────────────────────────────────────────────────────
 c.section('4. Skill / 工具');

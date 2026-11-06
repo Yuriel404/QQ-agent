@@ -1,4 +1,4 @@
-// 〔通用弹窗外壳 / 模型选择 / 人设 / 白名单 / saveConfig〕——M9 拆分第 9 段
+// 〔通用弹窗外壳 / 模型选择 / 白名单 / saveConfig〕——M9 拆分第 9 段
 'use strict';
 // ── 模型选择/添加/删除 模态框 ──
 function closeAnimatedOverlay(overlay) {
@@ -87,6 +87,38 @@ function modelModalShell({ head, body, foot = '', danger = false }) {
   return overlay;
 }
 
+function openPersonaEditor(chatKey, scopeLabel) {
+  const persona = state.config.persona || {};
+  const overlay = modelModalShell({
+    head: chatKey ? (chatKey.startsWith('group:') ? '编辑群聊人设' : '编辑私聊人设') : '编辑全局人设',
+    body: `<div class="field"><label for="persona-editor-text">${esc(scopeLabel)}</label>
+      <textarea id="persona-editor-text" rows="8" aria-describedby="persona-editor-hint"></textarea>
+      <div class="hint" id="persona-editor-hint">${chatKey ? '清空并保存后，此会话将沿用全局人设。' : '清空并保存即可移除全局人设。'}</div>
+      <div class="hint" role="alert"></div></div>`,
+    foot: '<button type="button" class="btn" id="persona-cancel">取消</button><button type="button" class="btn btn-primary" id="persona-save">保存</button>'
+  });
+  const textarea = overlay.querySelector('textarea');
+  textarea.value = (chatKey ? persona.chatTexts?.[chatKey] : persona.customText) || '';
+  overlay.querySelector('#persona-cancel').addEventListener('click', () => closeModelModal(overlay));
+  const save = overlay.querySelector('#persona-save');
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    textarea.readOnly = true;
+    const text = textarea.value.trim();
+    const patch = chatKey ? { chatTexts: { [chatKey]: text } } : { customText: text };
+    try {
+      const data = await api('/api/config', { method: 'POST', body: JSON.stringify({ persona: patch }) });
+      state.config = data.config;
+      closeModelModal(overlay);
+      if (state.tab === 'settings' && state.settingsSection === 'persona') renderSettings();
+    } catch (err) {
+      overlay.querySelector('[role="alert"]').textContent = `保存失败：${err.message}`;
+      save.disabled = false;
+      textarea.readOnly = false;
+    }
+  });
+}
+
 /**
  * 调用明细弹窗：点「调用次数」卡片打开，列出各类工具分别被调用了多少次。
  *
@@ -158,100 +190,6 @@ function openToolBreakdown() {
         ${rows}
       </div>`,
     foot: '<div class="muted tb-foot">工具调用本身不额外计费，成本来自它们消耗的 token。</div>'
-  });
-}
-
-// ── 人设选择/添加 模态框 ──
-
-/** 选择人设：弹窗列出所有人设（含自定义），点击后填入角色设定文本框。 */
-function openPersonaPicker() {
-  const entries = Object.entries(state.personaTemplates || {});
-  if (!entries.length) {
-    $('#persona-pick-hint').textContent = '人设列表为空';
-    return;
-  }
-  const overlay = modelModalShell({
-    head: '选择人设',
-    body: `
-      <div class="model-modal-right" id="persona-list" style="flex:1">
-        ${entries.map(([id, p]) => `
-          <div class="mm-model" data-id="${esc(id)}">
-            <span class="mm-check">${(state.personaTemplates[id]?.text === ($('#cfg-roletext')?.value ?? '')) ? '✓' : ''}</span>
-            <span>${esc(p.name)}</span>
-            <span class="muted" style="font-size:11px">${p.builtin ? '内置' : '自定义'}</span>
-          </div>`).join('')}
-      </div>`,
-    foot: `<button class="btn" id="persona-cancel">取消</button>`
-  });
-  overlay.querySelectorAll('.mm-model').forEach((el) => {
-    el.addEventListener('click', () => {
-      const id = el.dataset.id;
-      const tpl = state.personaTemplates[id];
-      if (tpl) {
-        $('#cfg-roletext').value = tpl.text;
-        $('#cfg-customrules').value = tpl.customRules || '';
-        const input = $('#cfg-persona-pick');
-        if (input) input.value = tpl.name;
-        // ⚠️ 程序化赋值不触发 input/change 事件 → 自动保存不会启动。
-        //    这是"选了人设但改了不生效/切走就丢"的根因之一：用户以为点选
-        //    完就保存了，实际上防抖窗口从未开启，切页签的 flush 也无从发起。
-        //    主动派发 input 让表单监听器（#settings-form 上的委托监听）感知变化。
-        $('#cfg-roletext')?.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      closeModelModal(overlay);
-      syncPersonaButtons();
-    });
-  });
-  overlay.querySelector('#persona-cancel').addEventListener('click', () => closeModelModal(overlay));
-}
-
-/** 添加人设：弹窗填写人设名称、角色设定、管理员附加规则。 */
-function openPersonaCreateModal() {
-  const overlay = modelModalShell({
-    head: '添加人设',
-    body: `
-      <div class="field" style="flex:1;min-width:0">
-        <label>人设名称</label>
-        <input type="text" id="new-persona-name" placeholder="例如：毒舌老哥" />
-      </div>
-      <div class="field" style="flex:1;min-width:0">
-        <label>角色设定</label>
-        <textarea id="new-persona-text" class="persona-role-text" style="min-height:220px" placeholder="人设文本"></textarea>
-      </div>
-      <div class="field" style="flex:1;min-width:0">
-        <label>管理员附加规则（可选）</label>
-        <textarea id="new-persona-rules" style="min-height:90px" placeholder="可选：追加到系统提示的规则"></textarea>
-      </div>`,
-    foot: `<button class="btn" id="persona-add-cancel">取消</button>
-           <button class="btn btn-primary" id="persona-add-apply">确认添加</button>`
-  });
-  overlay.querySelector('#persona-add-cancel').addEventListener('click', () => closeModelModal(overlay));
-  overlay.querySelector('#persona-add-apply').addEventListener('click', async () => {
-    const name = overlay.querySelector('#new-persona-name').value.trim();
-    const text = overlay.querySelector('#new-persona-text').value.trim();
-    const customRules = overlay.querySelector('#new-persona-rules').value.trim();
-    if (!name) { $('#persona-pick-hint').textContent = '人设名称不能为空'; return; }
-    if (!text) { $('#persona-pick-hint').textContent = '角色设定不能为空'; return; }
-    try {
-      await api('/api/persona-templates', {
-        method: 'POST',
-        body: JSON.stringify({ name, text, customRules })
-      });
-      closeModelModal(overlay);
-      $('#cfg-roletext').value = text;
-      $('#cfg-customrules').value = customRules;
-      const input = $('#cfg-persona-pick');
-      if (input) input.value = name;
-      // 同 openPersonaPicker：程序化赋值不触发 input 事件，自动保存不会启动 ——
-      // 主动派发一次，否则"添加完人设切走页签"就丢（保存从未发起）。
-      $('#cfg-roletext')?.dispatchEvent(new Event('input', { bubbles: true }));
-      await loadSettings();
-      // loadSettings 会重渲染整个表单；重渲染用的是 state.config（含刚派发
-      // 事件触发的自动保存最终值）。自动保存在途时渲染守卫会拦下并补绘，不会丢。
-      $('#persona-pick-hint').textContent = `人设「${name}」已添加并填入表单，自动保存稍后生效（也可切走页签前确认）。`;
-    } catch (e) {
-      $('#persona-pick-hint').textContent = `添加失败：${e.message}`;
-    }
   });
 }
 
@@ -1374,25 +1312,6 @@ async function saveConfig({ quiet = false } = {}) {
     };
   }
 
-  if (sec === 'persona') {
-    patch.persona = {
-      botName: val('#cfg-botname', c.persona.botName).trim() || '小鲸鱼',
-      selfNickname: val('#cfg-selfnick', c.persona.selfNickname || '').trim(),
-      participation: val('#cfg-participation', c.persona.participation),
-      roleText: val('#cfg-roletext', c.persona.roleText || ''),
-      customRules: val('#cfg-customrules', c.persona.customRules || ''),
-      systemPromptOverride: val('#cfg-sysprompt', c.persona.systemPromptOverride || '')
-    };
-    // 统一人设开关：编辑器随开关二选一在场，读不到的保持旧值。
-    patch.personaUnified = chk('#cfg-persona-unified', c.personaUnified !== false);
-    // personaByChat 不在这里收集：独立人设模态框已改为**直接 POST 落盘**（openPerChatPersonaModal
-    // 的 saveToMap），不再走"隐藏 JSON → 表单保存链"——那条链的 change 事件根本到不了 form
-    // 监听器，而且 loadSettings 重建 DOM 会把没保存的值吹掉。这里如果再把（可能过期的）
-    // 隐藏 JSON 值 POST 一遍，会把 modal 刚存的条目用旧值覆盖回去。
-    // ⚠️ 统一开关运行语义（与 personaForChat 一致）：开启 = 一律用全局人设，
-    //    personaByChat 条目不参与合并（数据保留，关掉开关后恢复生效）。
-  }
-
   if (sec === 'allow') {
     patch.allow = {
       groups: parseList(val('#cfg-allowgroups', (c.allow?.groups || []).join(','))),
@@ -1485,6 +1404,10 @@ async function saveConfig({ quiet = false } = {}) {
   }
 
   if (sec === 'onebot') {
+    patch.persona = {
+      botName: val('#cfg-botname', c.persona?.botName || '').trim(),
+      selfNickname: val('#cfg-selfnick', c.persona?.selfNickname || '').trim()
+    };
     // ⚠️ 令牌是脱敏回传的（值是 ******，真实值只在后端）：
     //    留空 / ****** = 保持原值不变；只有输入了新明文才更新。
     //    曾经直接把输入框的值（脱敏后为空）写进 patch，

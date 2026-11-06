@@ -873,14 +873,14 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
       : isAtMe(text, {
         selfId: selfIdNow,
         selfNickname: onebot.selfNickname,
-        botName: getConfig().persona?.botName || ''
-      });
+        botName: cfgNow.persona?.botName || ''
+      }) || isAtMe(text, { selfNickname: cfgNow.persona?.selfNickname });
     const atNames = atMarks.map((m) => String(m?.text || '')).filter(Boolean);
 
     // ── 指令禁言：群内任何人 @机器人 + 发送指定指令 → 该群暂时固定 1 档（仅艾特）──
     // 在存档前处理：指令本身也要留档（让机器人知道被禁言了），但先设置禁言状态。
     if (kind === 'group') {
-      maybeTriggerCommandMute(id, text, event, atMe);
+      maybeTriggerCommandMute(id, text, atMe);
     }
 
     const entry = store.appendIncoming(`${kind}:${id}`, {
@@ -906,7 +906,7 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
    * 指令禁言：检测"@机器人 + 指定指令"，命中则把该群响应档位暂时固定为 1 档。
    * 禁言状态写入 config.commandMute.active[群号] = 到期时间戳（0 = 直到手动解除）。
    */
-  function maybeTriggerCommandMute(groupId, text, event, atMeMark = null) {
+  function maybeTriggerCommandMute(groupId, text, atMe) {
     const cm = getConfig().commandMute;
     if (!cm || cm.enabled !== true) return;
     const command = String(cm.command || '').trim();
@@ -914,13 +914,6 @@ export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
     // 必须同条消息里既 @机器人 又含指令。
     // 2026-09-26：有 @ 段标记时以标记为准（QQ 号判定，能区分同名）——
     // 文本包含匹配会把"@" 与机器人重名的另一个人"误判成召唤，进而误禁言。
-    const selfId = onebot.selfId;
-    const botName = getConfig().persona?.botName || '';
-    const selfNick = getConfig().persona?.selfNickname || onebot.selfNickname || '';
-    const atMe = (typeof atMeMark === 'boolean')
-      ? atMeMark
-      : (text.includes(`@${selfNick}`) || (botName && text.includes(`@${botName}`))
-        || (selfId && new RegExp(`\\[CQ:at(?:,[^\\]]*?)?qq=${selfId}[^\\]]*\\]`).test(text)));
     if (!atMe) return;
     if (!text.includes(command)) return;
     // 设置禁言：durationMin>0 则到期时间戳，否则 0（直到手动解除）

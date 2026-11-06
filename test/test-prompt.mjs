@@ -23,7 +23,10 @@ const { setRuntimeConfig, DEFAULT_CONFIG } = await import('../src/config.js');
 const cfg = structuredClone(DEFAULT_CONFIG);
 cfg.persona.botName = '测试机';
 cfg.persona.roleText = '你是测试群里的测试机。';
-cfg.persona.participation = 'medium';
+cfg.persona.customRules = '旧规则标记-123';
+cfg.persona.systemPromptOverride = '旧覆盖标记-456';
+cfg.personaUnified = false;
+cfg.personaByChat = { '123': { roleText: '旧分群标记-789' } };
 // 上下文读取档位（替代旧的 pastStateLimit/pastStateMaxChars）；2026-09-25 起各档条数统一
 cfg.store.contextTier = 4;
 cfg.store.historyCount = 80;
@@ -61,7 +64,7 @@ function makeStore() {
 
 // ── 1. 系统提示包含全部行为模块，且不包含已移除的沉睡/唤醒机制 ──
 const sys = buildSystemPrompt();
-for (const keyword of ['安全规则', '工作方式', '反 AI 味', '保持主体性', '该说/不该说', '群聊不是客服队列', '像真人一样', '引用与点名', '记忆', '表情包策略', '发送与汇报禁令']) {
+for (const keyword of ['安全规则', '工作方式', '引用与点名', '记忆', '表情包策略', '发送与汇报禁令']) {
   assert.ok(sys.includes(keyword), `系统提示缺少模块：${keyword}`);
 }
 for (const banned of ['沉睡前观察', 'qq_wait_for_messages', 'qq_set_wake_config', 'qq_mark_read', '[SILENT]', '会话令牌']) {
@@ -70,7 +73,7 @@ for (const banned of ['沉睡前观察', 'qq_wait_for_messages', 'qq_set_wake_co
 
 // ── 2. 用户提示：包含当前实现的真实段落 ──
 // 注意：段落清单必须与 buildUserPrompt 实际产出保持一致。
-// 当前实现产出：【当前时间】【角色设定】【已读信息】【未读信息】【记忆】【可用表情包】【引导说明】
+// 当前实现产出：【当前时间】【已读信息】【未读信息】【记忆】【可用表情包】【引导说明】
 // （2026-09-25 改版：【此刻状态】删除、【过去状态】→【已读信息】、【本次唤醒】→【未读信息】。）
 const store = makeStore();
 const memory = new MemoryStore();
@@ -98,7 +101,7 @@ const userPrompt = buildUserPrompt({
   proactive: false
 });
 
-for (const section of ['【当前时间】', '【角色设定', '【已读信息】', '【未读信息】', '【记忆】', '【可用表情包】', '【引导说明】']) {
+for (const section of ['【当前时间】', '【已读信息】', '【未读信息】', '【记忆】', '【可用表情包】', '【引导说明】']) {
   assert.ok(userPrompt.includes(section), `用户提示缺少段落：${section}`);
 }
 for (const banned of ['沉睡前观察', 'qq_', '[SILENT]', '【此刻状态】', '【过去状态】', '【本次唤醒】']) {
@@ -106,7 +109,7 @@ for (const banned of ['沉睡前观察', 'qq_', '[SILENT]', '【此刻状态】'
 }
 
 // ── 2b. 段落顺序 = 变化频率升序（前缀缓存命中）───────────────────────────
-// 稳定段（角色设定/表情包/引导说明/记忆/已读信息）必须排在易变段（未读信息/
+// 稳定段（表情包/引导说明/记忆/已读信息）必须排在易变段（未读信息/
 // 当前时间）之前：任何一个易变段插在稳定段前面，都会把后面的全部段落挤出
 // 两次运行间的缓存前缀。
 // 2026-09-25 锚点改版：【记忆】移到【已读信息】之前 —— 连续触发时记忆+已读
@@ -115,7 +118,6 @@ for (const banned of ['沉睡前观察', 'qq_', '[SILENT]', '【此刻状态】'
 // 字样，只搜段名会匹配到正文引用。
 {
   const header = (mark) => userPrompt.indexOf(mark);
-  assert.ok(header('【角色设定（管理员设置') >= 0, '应有角色设定段');
   assert.ok(header('【引导说明】') < header('【记忆】\n'), '引导说明应在记忆之前');
   assert.ok(header('【记忆】\n') < header('【已读信息】以下是这个会话'), '记忆应在已读信息之前（锚点前缀的核心）');
   assert.ok(header('【已读信息】以下是这个会话') < header('【未读信息】以下是'), '已读信息应在未读信息之前');
@@ -151,13 +153,18 @@ const proactivePrompt = buildUserPrompt({
 });
 assert.ok(proactivePrompt.includes('【已读信息】'), '主动模式也带已读信息');
 
-// ── 7. 默认人设 = 原版小鲸鱼角色卡（已适配新架构，不含旧机制指令） ──
-assert.ok(DEFAULT_CONFIG.persona.roleText.includes('DeepSeek 小鲸鱼'), '默认人设为原版小鲸鱼角色卡');
-for (const banned of ['[SILENT]', 'mcp__snowluma', 'qq_set_wake_config', 'qq_mark_read', 'qq_wait_for_messages', 'qq_send_message', '空格分隔（例如']) {
-  assert.ok(!DEFAULT_CONFIG.persona.roleText.includes(banned), `默认人设不应包含旧架构指令：${banned}`);
+// 旧进程内配置或第三方调用方仍可能传入完整角色卡，也不能进入任何提示词。
+const oldPrompts = [sys, userPrompt, proactivePrompt, buildSystemPrompt({
+  persona: cfg.persona,
+  extraSections: [{ content: '旧主人规则标记', priority: 72 }]
+})];
+for (const prompt of oldPrompts) {
+  for (const marker of ['【角色设定', '反 AI 味', '像真人一样', 'DeepSeek 小鲸鱼', cfg.persona.roleText,
+    '旧主人规则标记', cfg.persona.customRules, cfg.persona.systemPromptOverride, cfg.personaByChat['123'].roleText]) {
+    assert.ok(!prompt.includes(marker), `不应注入人设：${marker}`);
+  }
 }
 
-// ── 收尾：清理隔离数据目录 ──
 // ── 8. 档位判定误判回归（2026-09-26）────────────────────────────────
 // 实际 bug：① 群友 @ 的人与机器人重名 → 1 档误判为召唤；② @ 别人的名字里
 // 带关键词 → 2 档误命中。修复：atMe 标记（来自 @ 段 QQ 号）优先于文本匹配、

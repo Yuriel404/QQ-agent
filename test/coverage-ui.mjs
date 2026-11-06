@@ -265,7 +265,7 @@ await c.check('app.js 里 $(\'#id\') / getElementById 引用的 id 都能被创�
   const DYNAMIC_IDS = new Set([
     // switchHtml(id, …) 生成 id="${id}" 的开关；静态扫描看不到模板内部，按字面量调用豁免
     'cfg-useofficialprice', 'cfg-tools-enabled', 'cfg-imagesend',
-    'cfg-persona-unified', 'cfg-autostart', 'cfg-closetray', 'cfg-showvision',
+    'cfg-autostart', 'cfg-closetray', 'cfg-showvision',
     'cfg-proactive', 'cfg-sticker', 'cfg-websearch', 'cfg-allowallwhenempty',
     'cfg-mem-consolidate', 'cfg-mem-usechat'
   ]);

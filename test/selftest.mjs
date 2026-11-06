@@ -280,7 +280,10 @@ refs:
     webSearch: { enabled: true, searchUrl: `http://127.0.0.1:${PORTS.onebotHttp}/search`, maxResults: 6 },
     security: { allowPrivateImageHosts: false },
     snowluma: { wsUrl: `ws://127.0.0.1:${PORTS.onebotWs}`, httpUrl: `http://127.0.0.1:${PORTS.onebotHttp}`, accessToken: '' },
-    persona: { botName: '审计Bot', participation: 'medium', roleText: '你是审计群里的机器人。' },
+    persona: {
+      botName: '审计Bot', roleText: '这是旧角色卡。',
+      customText: '全局人设标记-A', chatTexts: { 'group:456': '本群人设标记-B' }
+    },
     allow: { groups: ['456'], private: ['777'] },
     deny: { groups: [], private: [] },
     allowAllWhenEmpty: false,
@@ -341,6 +344,9 @@ refs:
   assert.strictEqual(req1.messages.length, 2, '第一次运行只应有 system+user 两条消息（零 LLM 历史）');
   assert.strictEqual(req1.messages[0].role, 'system');
   assert.strictEqual(req1.messages[1].role, 'user');
+  for (const message of req1.messages) assert.ok(!message.content.includes(cfg.persona.roleText), '旧角色卡不得发给模型');
+  assert.ok(req1.messages[0].content.includes(cfg.persona.chatTexts['group:456']), '该群的自设人设进入真实模型请求');
+  assert.ok(!req1.messages[0].content.includes(cfg.persona.customText), '群人设替代全局人设');
   const user1 = req1.messages[1].content;
   assert.ok(user1.includes('【未读信息】') && user1.includes('在吗？'), '用户消息含未读信息与触发文本');
   assert.ok(user1.includes('【当前时间】') && user1.includes('【已读信息】'), '用户消息含时间与已读信息');
@@ -545,7 +551,9 @@ refs:
   const privSend = onebotHttp.state.sends.find((s) => s.action === 'send_private_msg');
   assert.strictEqual(privSend.body.user_id, 777);
   assert.strictEqual(privSend.body.message.at(-1).data.text, '私聊回复');
-  await waitSessionDone('单独找你');
+  const privateSession = await waitSessionDone('单独找你');
+  assert.ok(privateSession.systemPrompt.includes(cfg.persona.customText), '未指定独立人设的私聊使用全局人设');
+  assert.ok(!privateSession.systemPrompt.includes(cfg.persona.chatTexts['group:456']), '私聊不接收群人设');
   pass('私聊流程正常');
 
   // ── 场景 10：拍一拍触发 ──
@@ -689,9 +697,7 @@ refs:
   assert.ok(testSendRes.ok, '测试消息发送成功');
   assert.ok(onebotHttp.state.sends.some((s) => s.body.message.at(-1).data.text === '手动测试消息'), '测试消息到达 OneBot');
   assert.ok(app.store.recent('group:456', { limit: 5 }).some((m) => m.self && m.text === '手动测试消息'), '测试消息入档为自己的发言');
-  const tplRes = await (await consoleFetch('/api/persona-templates')).json();
-  assert.ok(tplRes.templates.some((t) => t.id === 'xiaojingyu' && t.text.includes('DeepSeek 小鲸鱼')), '原版小鲸鱼人设模板在内');
-  pass('引导助手：群/好友列表 + 手动测试消息 + 人设模板');
+  pass('引导助手：群/好友列表与手动测试消息');
 
   // 场景 16（预算保险丝）已随功能一并移除。
   // 原因：priceInputPerM / priceOutputPerM 实际恒为 0（走中转站套餐制），
@@ -1140,12 +1146,12 @@ refs:
     const expect = [
       [0, '表情包是备选项'],
       [1, '每 3~5 轮来一张'],
-      [2, '回应、吐槽、接梗时优先考虑'],
-      [3, '表情包爱好者']
+      [2, '优先考虑使用'],
+      [3, '尽量使用']
     ];
     for (const [lvl, kw] of expect) {
       setRuntimeConfig({ ...base, sticker: { ...base.sticker, enabled: true, encourage: lvl } });
-      const sys = buildSystemPrompt({ persona: { botName: 'bot', participation: 'medium' } });
+      const sys = buildSystemPrompt();
       assert.ok(sys.includes('【表情包策略'), `${lvl} 档：系统提示应包含表情包策略段`);
       assert.ok(sys.includes(kw), `${lvl} 档频率行应包含「${kw}」，实际未命中`);
     }

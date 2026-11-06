@@ -157,9 +157,11 @@ function resetConfig() {
   }
 
   // ── 个人配置 ──
-  if (cfg.persona) {
-    for (const k of ['roleText', 'customRules', 'selfNickname']) set(cfg.persona, k, '');
-    set(cfg.persona, 'botName', '小鲸鱼');
+  for (const field of ['persona', 'personaByChat', 'personaUnified', 'customPersonas']) {
+    if (Object.hasOwn(cfg, field)) {
+      cleared.push(field);
+      if (!DRY) delete cfg[field];
+    }
   }
   if (cfg.allow) {
     cfg.allow.groups = [];

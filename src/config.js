@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PERSONAS } from './personas.js';
 import { sameProviderEndpoint } from './provider-credentials.js';
 import { sliderToTier } from './tier-slider.js';   // 零依赖模块，避免循环依赖
 
@@ -174,31 +173,11 @@ export const DEFAULT_CONFIG = {
     accessToken: '',           // WebSocket 令牌
     httpAccessToken: ''        // HTTP API 令牌（SnowLuma 可与 WS 不同；留空沿用 accessToken）
   },
-  // 人设与行为
   persona: {
-    botName: '小鲸鱼',
-    selfNickname: '',                       // 在群里的展示名（留空用 QQ 昵称）
-    roleText: PERSONAS.xiaojingyu.text,     // 默认人设：原版"小鲸鱼"角色卡（适配版）
-    participation: 'medium',                // low | medium | high —— 参与度参考
-    customRules: '',                        // 追加自定义规则（可选）
-    // 系统提示词覆盖（可选）：非空时**整体替换** buildSystemPrompt 的默认行为准则。
-    // ⚠️ 高级功能：默认提示词包含安全规则/工具协议/反AI味等关键约束，
-    //    覆盖后这些全部失效，需自行在覆盖文本里写明。留空 = 用内置默认提示词。
-    // 可用占位符：{botName} {roleText} {participation}
-    systemPromptOverride: ''
+    botName: '', selfNickname: '', // 账号别名，用于识别对机器人的提及
+    customText: '',               // 用户填写的全局人设
+    chatTexts: {}                 // 按 group:id / private:id 覆盖；留空沿用全局
   },
-  // 用户自定义人设库（保存在配置里，可在设置页添加/选择）
-  customPersonas: [],
-  // 按会话独立人设：{ [群号/QQ号]: { roleText, participation, customRules, systemPromptOverride } }
-  // key 是白名单会话的 id（群号或私聊 QQ 号），值是该会话覆盖全局 persona 的字段；
-  // 只覆盖写在这里的字段，其余（botName/selfNickname 等账号身份）永远用全局值 ——
-  // 名字换了会和 @ 判定、存档里"我"的称呼对不上。
-  personaByChat: {},
-  // 统一人设（人设页开关）：true = 所有用一套全局人设；false = 人设页展示分会话
-  // 独立编辑入口（personaByChat 生效）。运行语义与 UI 一致（personaForChat 在
-  // 统一模式下不读 personaByChat）—— 否则统一开关形同虚设：旧分会话条目会
-  // 继续静默覆盖全局人设，而 UI 已把编辑入口藏起来了。
-  personaUnified: true,
   // 接入白名单
   allow: { groups: [], private: [] },
   deny: { groups: [], private: [] },
@@ -404,7 +383,7 @@ export function deepMerge(base, override) {
   return out;
 }
 
-function normalizeGlobalBlocklist(config) {
+function normalizeConfig(config) {
   // 旧版把已解除屏蔽的号码另存为豁免项。升级时从已保存的名单扣除它们。
   const exemptions = Array.isArray(config.communityExemptions) ? config.communityExemptions : [];
   const exempt = new Set(exemptions.map((id) => String(id).trim()));
@@ -412,6 +391,17 @@ function normalizeGlobalBlocklist(config) {
   const valid = ids.map((id) => String(id).trim()).filter((id) => /^\d{1,12}$/.test(id) && !exempt.has(id));
   config.globalBlocklist = [...new Set(valid)].slice(0, 20000);
   delete config.communityExemptions;
+  const persona = config.persona && typeof config.persona === 'object' && !Array.isArray(config.persona)
+    ? config.persona : DEFAULT_CONFIG.persona;
+  const chatTexts = {};
+  if (persona.chatTexts && typeof persona.chatTexts === 'object' && !Array.isArray(persona.chatTexts)) {
+    for (const [key, value] of Object.entries(persona.chatTexts)) {
+      if (/^(group|private):\d+$/.test(key) && typeof value === 'string' && value.trim()) {
+        chatTexts[key] = value.trim();
+      }
+    }
+  }
+  config.persona = { ...persona, customText: typeof persona.customText === 'string' ? persona.customText.trim() : '', chatTexts };
   return config;
 }
 
@@ -430,7 +420,7 @@ export function loadConfig() {
     let text = fs.readFileSync(CONFIG_FILE, 'utf8');
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
     const parsed = JSON.parse(text);
-    return normalizeGlobalBlocklist(deepMerge(DEFAULT_CONFIG, stripObsoleteFields(migrateLegacySkills(parsed))));
+    return normalizeConfig(deepMerge(DEFAULT_CONFIG, stripObsoleteFields(migrateLegacySkills(parsed))));
   } catch (error) {
     // ⚠️ 配置文件坏了（手改错/磁盘故障）不能静默回落默认值：
     //   曾经直接返回 DEFAULT，随后任何 updateConfig 都会以默认配置为底整体写回 config.json ——
@@ -523,6 +513,13 @@ export function migrateLegacySkills(parsed) {
  * 与 stripDerivedFlags 一样在 loadConfig / updateConfig 时调用，删旧键不碰活键。
  */
 const OBSOLETE_PATHS = [
+  ['persona', 'roleText'],
+  ['persona', 'customRules'],
+  ['persona', 'participation'],
+  ['persona', 'systemPromptOverride'],
+  ['personaByChat'],
+  ['personaUnified'],
+  ['customPersonas'],
   ['api', 'stream'],
   ['api', 'priceRemoteUrl'],
   ['budget'],
@@ -632,7 +629,7 @@ export function updateConfig(patch) {
   // 回填现值；想真清除必须显式传 apiKey: ''（专用清除按钮就是显式空串路径）。
   const previous = getConfig();
   preserveSanitizedSecrets(previous, cleanObsolete);
-  const nextConfig = normalizeGlobalBlocklist(deepMerge(structuredClone(previous), cleanObsolete));
+  const nextConfig = normalizeConfig(deepMerge(structuredClone(previous), cleanObsolete));
   // 手动配置沿用旧 Key 只适用于同一端点。切换目标时必须显式输入新 Key。
   const apiUrlChanged = previous.api?.baseUrl !== nextConfig.api?.baseUrl
     && !sameProviderEndpoint(previous.api?.baseUrl, nextConfig.api?.baseUrl);
@@ -689,46 +686,6 @@ export function updateConfig(patch) {
 /** 内存态改动（不落盘）——用于运行期覆盖（如自测注入 mock）。 */
 export function setRuntimeConfig(cfg) {
   currentConfig = cfg;
-}
-
-/**
- * 取某个会话实际生效的人设：全局 persona 被 personaByChat[id] 的同名字段覆盖。
- *
- * 只允许覆盖 roleText / participation / customRules / systemPromptOverride 四个
- * "说话风格"字段；botName / selfNickname 是账号身份，任何会话都不得单独改 ——
- * 换了会与 @ 判定（isAtMe 用昵称/名字匹配）、存档里"我"的称呼全部对不上。
- * 覆盖值一律做字符串 trim（空串视为"未设置"，回落全局值）。
- *
- * ⚠️ personaUnified = true（"为所有的群聊/私聊使用同一个人设"）时，
- *    personaByChat 的条目**不再生效**（统一人设是用户明确表态，遗留的
- *    分会话条目继续覆盖会让"所有会话共用这一套人设"的 UI 承诺落空，
- *    且统一模式下 UI 隐藏了分会话编辑入口，用户无从发现也无处改）。
- *    开关关掉后条目恢复生效 —— 数据不删，只是不再参与合并。
- */
-export function personaForChat(chatKey) {
-  const base = getConfig().persona || {};
-  const [kind, id] = String(chatKey || '').split(':');
-  if (!id) return base;
-  // 统一人设模式：一律用全局，不看 personaByChat
-  if (getConfig().personaUnified !== false) return base;
-  const perChat = getConfig().personaByChat || {};
-  // 兼容两种键格式：UI 的隐藏 JSON 以 chatKey（group:123）为键保存，
-  // 而这里按 id 段（123）查 —— 只认一种格式时保存成功但永不生效
-  // （2026-09-17 用户实测踩中：独立人设存了却一直跟随全局）。
-  const raw = perChat[String(id)] ?? perChat[String(chatKey)];
-  if (!raw || typeof raw !== 'object') return base;
-  const pick = (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-  const out = { ...base };
-  if (kind === 'group' || kind === 'private') {
-    const roleText = pick(raw.roleText);
-    const customRules = pick(raw.customRules);
-    const systemPromptOverride = pick(raw.systemPromptOverride);
-    if (roleText !== undefined) out.roleText = roleText;
-    if (customRules !== undefined) out.customRules = customRules;
-    if (systemPromptOverride !== undefined) out.systemPromptOverride = systemPromptOverride;
-    if (['low', 'medium', 'high'].includes(raw.participation)) out.participation = raw.participation;
-  }
-  return out;
 }
 
 /**

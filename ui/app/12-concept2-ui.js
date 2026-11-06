@@ -214,7 +214,6 @@ function autoFoldSettings(root) {
       if (/模型|API|渠道/.test(t)) { groupIcon = '🔑'; }
       else if (/搜索/.test(t)) { groupIcon = '🔍'; }
       else if (/记忆/.test(t)) { groupIcon = '🧠'; }
-      else if (/人设|角色/.test(t)) { groupIcon = '🎭'; }
       else if (/白名单|允许/.test(t)) { groupIcon = '✅'; }
       else if (/聊天|消息|发送|响应|触发|活跃/.test(t)) { groupIcon = '💬'; }
       else if (/桌面|启动|更新|数据/.test(t)) { groupIcon = '🖥'; }

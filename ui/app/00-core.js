@@ -461,7 +461,6 @@ const state = {
   currentChatKey: null,
   chatMessages: [],
   config: null,
-  personaTemplates: {},
   skills: [],            // 扩展条目状态列表（技能+插件，后端判定，含 kind 与不可用原因）
   skillsSummary: {},     // 后端全量摘要 { total, active, disabled, broken, capabilities }
                          // ⚠️ 两页的"生效 N/M"不读它，而是按本页条目现算 ——
@@ -472,6 +471,7 @@ const state = {
   pauseReason: null,
   autoFollowRunning: true,
   settingsSection: 'api',
+  personaChatKey: '',
   memoryView: 'events',
   currentMemoryChatKey: null,
   groupMembers: [],
@@ -784,12 +784,6 @@ function switchTab(name) {
   state.tab = name;
   if (name === 'sessions') loadSessions();
   if (name === 'chats') loadChats();
-  // 群名补底：设置页（人设分群按钮/活跃设置分群下拉）用 chatNameOf 取名字，
-  // 依赖 state.chats —— 若用户没先进过存档页这里是空的，会只显示群号。
-  // 进设置页时悄悄拉一次（quiet，失败不报错），列表已在就跳过。
-  if (name === 'settings' && !(state.chats || []).length) {
-    api('/api/chats').then((d) => { state.chats = d.chats || []; }).catch(() => {});
-  }
   if (name === 'memory') loadMemoryView();
   if (name === 'usage') loadUsageView({ force: true });
   if (name === 'skills') loadModulePage('skill');

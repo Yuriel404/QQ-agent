@@ -413,9 +413,8 @@ async function openMemberNoteModal(qq, chatKey) {
   });
 }
 async function loadSettings() {
-  const [cfg, tplData, provData, visionData, priceData, toolsData, skillsData] = await Promise.all([
+  const [cfg, provData, visionData, priceData, toolsData, skillsData] = await Promise.all([
     api('/api/config'),
-    api('/api/persona-templates').catch(() => ({ templates: [] })),
     api('/api/providers').catch(() => ({ providers: [] })),
     api('/api/vision/results').catch(() => ({ results: {}, scanning: false })),
     api('/api/model-prices').catch(() => ({ prices: [], current: null })),
@@ -429,12 +428,10 @@ async function loadSettings() {
   state.visionResults = visionData.results || {};
   state.visionScanning = !!visionData.scanning;
   state.modelPrices = priceData || { prices: [], current: null };
-  state.personaTemplates = {};
   state.toolRegistry = toolsData.tools || [];
   state.skills = skillsData.skills || [];
   state.skillsSummary = skillsData.summary || {};
   state.uninstalledSkills = skillsData.uninstalled || [];
-  for (const t of tplData.templates || []) state.personaTemplates[t.id] = { name: t.name, text: t.text, builtin: !!t.builtin };
   // 提示词预览与配置并行拉取；渲染时可能还没到（先显示占位，到达后原地替换）
   refreshPromptPreview(cfg);
   renderSettings();
@@ -732,23 +729,6 @@ function openBatchPriceModal() {
   });
 }
 
-function renderPersonaPicker(c) {
-  const currentId = Object.entries(state.personaTemplates || {}).find(([, p]) => p.text === (c.persona?.roleText || ''))?.[0] || '';
-  const currentName = state.personaTemplates[currentId]?.name || '';
-  return `
-    <div class="field-row" style="align-items:flex-end">
-      <div class="field">
-        <label>选择人设</label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="text" id="cfg-persona-pick" class="inp persona-pick" readonly placeholder="点击选择人设" value="${esc(currentName)}" style="flex:1;min-width:160px;cursor:pointer" />
-          <button class="btn btn-small" id="new-persona-btn">＋ 添加人设</button>
-          <button class="btn btn-small btn-danger hidden" id="del-persona-btn">删除当前自定义人设</button>
-        </div>
-        <span id="persona-pick-hint" class="muted" style="font-size:12px"></span>
-      </div>
-    </div>`;
-}
-
 function renderHealthCard() {
   const { ready, checks } = assessReadiness(state.config, state.status);
   const rows = checks.map((c, idx) => {
@@ -783,5 +763,3 @@ function renderHealthCard() {
       ${testRow}
     </div>`;
 }
-
-// 人设模板数据：state.personaTemplates（由 loadSettings 从后端填充）

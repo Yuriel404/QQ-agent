@@ -8,7 +8,7 @@
 //
 // 同一会话（群/私聊）同时最多一个运行；运行期间新消息只写 JSON（未读），不叠加触发。
 // 不同会话之间并行，受 maxConcurrentRuns 全局限流。
-import { getConfig, storeConfigForChat, personaForChat } from './config.js';
+import { getConfig, storeConfigForChat } from './config.js';
 import { vendorOfConfig } from './model-prices.js';
 import { randInt } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, resolveContextTier } from './prompt.js';
@@ -716,7 +716,7 @@ export class Orchestrator {
     this.sessionAbortControllers.set(session.id, abortController);
     const abortSignal = abortController.signal;
     const chatName = kind === 'group' ? await this.#chatName(chatId) : '';
-    const selfNickname = kind === 'group' ? (cfg.persona.selfNickname || this.onebot.selfNickname || cfg.persona.botName) : cfg.persona.botName;
+    const selfNickname = this.onebot.selfNickname || '';
 
     // （原"上下文统计"三件套 —— 最近消息密度/上次发言时间/最后消息时间 ——
     //  只喂【此刻状态】段，该段 2026-09-25 删除后不再计算。）
@@ -757,49 +757,14 @@ export class Orchestrator {
       skillManager.recordError('before-context', error);
     }
 
-    // ── 主人识别（owner-identity Skill）──
-    // 通过能力名问"这批消息里有没有主人在跟机器人说话"，再据此决定这次用哪套人设。
-    // 做成能力而不是硬编码：关了主人 Skill 就自动回到全局人设，行为与没有该功能时一致。
-    // 判定**只按 QQ 号**（Skill 内部保证），名字/自称一律不参与 —— 详见该 Skill 注释。
-    let ownerPersona = null;
-    let ownerRules = '';
-    try {
-      for (const p of skillManager.getCapabilityProviders('message.owner-check', skillContext)) {
-        const r = p.fn({
-          triggerEntries,
-          kind,
-          selfId: this.onebot.selfId,
-          // 主人模式的"基准人设"用本会话独立人设：主人覆盖发生在会话人设之上，
-          // 没配置会话人设时 personaForChat 原样返回全局 persona，行为不变。
-          persona: personaForChat(chatKey)
-        });
-        if (r) { ownerPersona = r.persona || null; ownerRules = r.rules || ''; }
-        break;
-      }
-    } catch (error) {
-      skillManager.recordError('owner-identity', error);
-    }
-
-    // 组装提示词（无 LLM 历史）
-    // 人设优先级（逐层收窄，命中即用）：
-    //   1. 主人专属人设（owner-identity Skill 判定"主人在叫你"）
-    //   2. 本会话独立人设（personaByChat[群号/QQ号]，白名单设置里按会话配置）
-    //   3. 全局人设（cfg.persona）
-    // 名字（botName/selfNickname）在任何层都保持全局值 —— 那是账号身份，
-    // 换了会和 @ 判定对不上（personaForChat 在结构上就不允许覆盖这两个字段）。
-    const systemPrompt = buildSystemPrompt({
-      skillContext,
-      persona: ownerPersona || personaForChat(chatKey),
-      extraSections: ownerRules
-        ? [{ id: 'owner-rules-run', title: '', priority: 72, content: ownerRules }]
-        : []
-    });
+    const systemPrompt = buildSystemPrompt({ skillContext });
     const userPrompt = buildUserPrompt({
       chatKey, kind, chatId, chatName,
       triggerEntries,
       store: this.store,
       memory: this.memory,
       stickerEntries,
+      selfId: this.onebot.selfId,
       selfNickname,
       runSeq: seq,
       moreUnreadDuringRun: this.store.unreadCount(chatKey) > 0,
@@ -840,7 +805,7 @@ export class Orchestrator {
     const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: proactive
-        ? `${userPrompt}\n\n【未读信息】（主动机会）群里已经安静了一会儿。你可以主动抛一个自然的话题（像随口说的，不要像播报），也可以判断没必要说话就安静结束。`
+        ? `${userPrompt}\n\n【未读信息】（主动机会）群里已有一段时间没有新消息。可以发起新话题，也可以直接结束。`
         : userPrompt }
     ];
 
@@ -883,7 +848,7 @@ export class Orchestrator {
       signal: abortSignal,
       selfId: this.onebot.selfId,
       selfNickname,
-      botName: cfg.persona.botName,
+      botName: selfNickname,
       onebot: this.onebot,
       store: this.store,
       memory: this.memory,

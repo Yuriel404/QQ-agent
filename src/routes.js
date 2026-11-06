@@ -349,42 +349,6 @@ export function createRoutes(deps) {
       }
     },
 
-    // ── 人设模板 ─────────────────────────────────────────────────────
-    {
-      method: 'GET', pattern: '/api/persona-templates',
-      handler: async ({ res, json }) => {
-        const { PERSONAS } = await import('./personas.js');
-        const builtins = Object.entries(PERSONAS).map(([id, p]) => ({ id, name: p.name, text: p.text, builtin: true }));
-        const customs = (getConfig().customPersonas || []).map((p, i) => ({
-          id: `custom_${i}`, name: p.name, text: p.text, customRules: p.customRules || '', builtin: false
-        }));
-        return json(res, 200, { templates: [...builtins, ...customs] });
-      }
-    },
-    {
-      method: 'POST', pattern: '/api/persona-templates',
-      handler: async ({ req, res, json }) => {
-        const body = await bodyOf(req);
-        const name = String(body.name ?? '').trim().slice(0, 50);
-        const text = String(body.text ?? '').trim();
-        if (!name || !text) return json(res, 400, { ok: false, error: '人设名称和角色设定都不能为空' });
-        const entry = { name, text };
-        if (String(body.customRules ?? '').trim()) entry.customRules = String(body.customRules).trim();
-        const next = [...(getConfig().customPersonas || []), entry];
-        updateConfig({ customPersonas: next });
-        return json(res, 200, { ok: true, templates: next });
-      }
-    },
-    {
-      method: 'DELETE', pattern: /^\/api\/persona-templates\/(custom_\d+)$/,
-      handler: async ({ res, json, match }) => {
-        const idx = Number(match[1].replace('custom_', ''));
-        const next = (getConfig().customPersonas || []).filter((_, i) => i !== idx);
-        updateConfig({ customPersonas: next });
-        return json(res, 200, { ok: true });
-      }
-    },
-
     // ── 多提供商模型目录 ─────────────────────────────────────────────
     {
       method: 'GET', pattern: '/api/providers',
@@ -727,8 +691,12 @@ export function createRoutes(deps) {
       // 调用方把"当前工具面板状态"随请求发来，这里先 deepMerge 到临时副本上组装
       // （绝不写回 currentConfig），预览就能立即反映未保存的开关。
       method: '*', pattern: '/api/prompt-preview',
-      handler: async ({ req, res, json }) => {
+      handler: async ({ req, res, url, json }) => {
         const cfg = getConfig();
+        const chatKey = url.searchParams.get('chatKey') || '';
+        if (chatKey && !/^(group|private):\d+$/.test(chatKey)) {
+          return json(res, 400, { error: 'chatKey 需要使用 group:群号 或 private:QQ号' });
+        }
         let overrides = {};
         try {
           if (req.method === 'POST') overrides = (await bodyOf(req)) || {};
@@ -737,6 +705,7 @@ export function createRoutes(deps) {
           ? deepMergeConfig(structuredClone(cfg), structuredClone(overrides))
           : cfg;
         const skillContext = {
+          chatKey,
           skills: skillManager,
           toolsCfg: effective.tools || {},
           visionEnabled: effective.api?.vision !== false
@@ -752,7 +721,7 @@ export function createRoutes(deps) {
           .filter((d) => getToolAvailability(d.id, skillContext).enabled)
           .map((d) => ({ id: d.id, name: d.name, description: d.description, category: d.category }));
         return json(res, 200, {
-          systemPrompt: buildSystemPrompt({ skillContext }),
+          systemPrompt: buildSystemPrompt({ skillContext, config: effective }),
           tools
         });
       }

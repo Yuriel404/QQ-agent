@@ -227,7 +227,6 @@ export const hooks = {
 |---|---|---|---|
 | `message.speaker-format` | `prompt.js` | `{ message, notes, selfLabel }` | 字符串标签 |
 | `message.inline-at-normalize` | `onebot.js` | `{ text, members:[{userId,nickname}], atUserId }` | `string` 或 `null`（`null` = 不改） |
-| `message.owner-check` | `orchestrator.js` | `{ triggerEntries, kind, selfId, persona }` | `{ persona, rules }` |
 
 ### 4.2 媒体
 
@@ -551,7 +550,6 @@ export const hooks = {
 | `ban-state` | **开** | `chat.ban-state` |
 | `image-compat` | **开** | `image.mime-support`、`llm.retry-advisor` |
 | `media-download` | 关 | `media.download` |
-| `owner-identity` | 关 | `message.owner-check` |
 | `reply-safety` | 关 | `reply.*`（7 个） |
 | `speaker-identity` | **开** | `message.speaker-format`、`message.inline-at-normalize` |
 | `speech-to-text` | 关 | `media.transcribe` |
