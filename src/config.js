@@ -95,12 +95,12 @@ export const DEFAULT_CONFIG = {
   providersSourceYaml: '',
   // providersImported（导入来源标记）与 budget 容器是历史残留死字段（零读点），
   // loadConfig 时由 stripObsoleteFields 一并剔除。
-  // 联网搜索（默认 Bing 网页解析，无需 key；可选 DeepSeek/智谱/博查/百度/秘塔）
+  // 联网搜索默认使用免密钥的 Bing 网页解析。
   webSearch: {
     enabled: true,
     searchUrl: 'https://cn.bing.com/search',
     maxResults: 6,
-    // 可选：'bing' | 'deepseek' | 'zhipu' | 'bocha' | 'baidu' | 'metaso'
+    // 可选：'bing' | 'deepseek' | 'zhipu' | 'bocha' | 'baidu' | 'metaso' | 'tavily' | 'custom:<id>'
     provider: 'bing',
     deepseek: {
       apiKey: '',                     // 留空时回退环境变量 DEEPSEEK_API_KEY
@@ -131,6 +131,11 @@ export const DEFAULT_CONFIG = {
       apiKey: '',                     // 留空时回退环境变量 METASO_API_KEY（无 key 也尝试官方免费额度）
       baseUrl: 'https://metaso.cn/api/open/v1/search',
       count: 6,
+      timeoutMs: 20000
+    },
+    tavily: {
+      apiKey: '',                     // 官方端点可读取 TAVILY_API_KEY，没有密钥时使用免密钥搜索
+      baseUrl: 'https://api.tavily.com/search',
       timeoutMs: 20000
     },
     // 自定义搜索提供商列表（设置页可像添加模型提供商一样自行添加，可多个）。
@@ -637,7 +642,7 @@ export function updateConfig(patch) {
       && (previous.api.provider !== nextConfig.api.provider || apiUrlChanged)) {
     nextConfig.api.apiKey = '';
   }
-  for (const name of ['deepseek', 'zhipu', 'bocha', 'baidu', 'metaso', 'custom']) {
+  for (const name of ['deepseek', 'zhipu', 'bocha', 'baidu', 'metaso', 'tavily', 'custom']) {
     const changed = cleanObsolete.webSearch?.[name];
     const next = nextConfig.webSearch?.[name];
     if (changed?.baseUrl !== undefined && changed.apiKey === undefined && next?.apiKey

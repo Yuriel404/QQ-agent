@@ -21,6 +21,7 @@ try {
   const { createRoutes } = await import('../src/routes.js');
   const { chatCompletion, resolveApiKey } = await import('../src/llm.js');
   const { currentProviders, setProviderKey } = await import('../src/providers.js');
+  const { searchApiKey } = await import('../src/web-search.js');
   const { buildToolDefs } = await import('../src/tools.js');
   updateConfig({
     api: { provider: 'a', baseUrl: a, apiKey: 'old-manual-key', model: 'model-a' },
@@ -94,6 +95,18 @@ try {
   updateConfig({ api: { baseUrl: a, apiKey: 'replacement' } });
   assert.equal(resolveApiKey(getConfig()), 'replacement');
 
+  process.env.DEEPSEEK_API_KEY = 'env-key';
+  assert.equal(searchApiKey('deepseek'), 'env-key');
+  updateConfig({ webSearch: { deepseek: { apiKey: 'saved' }, providers: [{ id: 's', baseUrl: a, apiKey: 'custom' }] } });
+  updateConfig({ webSearch: { deepseek: { baseUrl: b }, providers: [{ id: 's', baseUrl: b }] } });
+  assert.equal(searchApiKey('deepseek'), '');
+  assert.equal(getConfig().webSearch.providers[0].apiKey, undefined);
+  process.env.TAVILY_API_KEY = 'tavily-env-test-key';
+  assert.equal(searchApiKey('tavily'), 'tavily-env-test-key');
+  updateConfig({ webSearch: { tavily: { apiKey: 'tavily-saved-test-key' } } });
+  assert.equal(searchApiKey('tavily'), 'tavily-saved-test-key');
+  updateConfig({ webSearch: { tavily: { baseUrl: b } } });
+  assert.equal(searchApiKey('tavily'), '', '改搜索端点须清除旧 Key，也不能带入官方端点的环境变量 Key');
 
   const defs = buildToolDefs();
   const list = defs.find((t) => t.id === 'get_chats');

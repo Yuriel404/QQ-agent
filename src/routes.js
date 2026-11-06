@@ -17,7 +17,9 @@ import { once } from 'node:events';
 import { isChatAllowed } from './chat-access.js';
 import { resolveProviderRequest } from './provider-credentials.js';
 import { getConfig, updateConfig, deepMerge as deepMergeConfig, DATA_DIR } from './config.js';
-import { customSearch } from './web-search.js';
+import { customSearch, searchApiKey, tavilySearch } from './web-search.js';
+import { getSearchPool, updateSearchPool } from './search-pool.js';
+import { listSearchPoolProviders } from './search-provider-info.js';
 import { listModels, chatCompletion, estimateCost, cacheHitRate } from './llm.js';
 import { resolveOfficialPrice, listOfficialPrices } from './model-prices.js';
 import { refreshPriceFeed, priceFeedStatus } from './price-feed.js';
@@ -383,20 +385,13 @@ export function createRoutes(deps) {
       handler: async ({ req, res, json, url }) => {
         if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
         const field = String(url.searchParams.get('field') || '');
-        const allowed = ['deepseek', 'zhipu', 'bocha', 'baidu', 'metaso'];
+        const allowed = ['deepseek', 'zhipu', 'bocha', 'baidu', 'metaso', 'tavily'];
         // 各家对应的环境变量名：Key 没存进配置但环境里有时，也算"有 Key"
         //（web-search.js 的取值优先级就是 cfg.apiKey > env），UI 的掩码/显示
         // 口径必须与之一致，否则会出现"明明能搜，Key 框却显示空"的错觉。
-        const ENV_OF = {
-          deepseek: 'DEEPSEEK_API_KEY',
-          zhipu: 'ZHIPU_API_KEY',
-          bocha: 'BOCHA_API_KEY',
-          baidu: 'BAIDU_SEARCH_API_KEY',
-          metaso: 'METASO_API_KEY'
-        };
         if (allowed.includes(field)) {
           const fromCfg = String(getConfig().webSearch?.[field]?.apiKey || '');
-          return json(res, 200, { apiKey: fromCfg, hasApiKey: Boolean(fromCfg || (ENV_OF[field] && process.env[ENV_OF[field]])) });
+          return json(res, 200, { apiKey: fromCfg, hasApiKey: Boolean(searchApiKey(field)) });
         }
         // 自定义搜索服务：field 形如 custom:<id>，按 id 在 providers 数组里找
         if (field.startsWith('custom:')) {
@@ -570,6 +565,22 @@ export function createRoutes(deps) {
 
     // ── 自定义搜索提供商 ─────────────────────────────────────────────
     {
+      method: 'GET', pattern: '/api/search-pool',
+      handler: async ({ res, json }) => json(res, 200, { pool: getSearchPool(), providers: listSearchPoolProviders() })
+    },
+    {
+      method: 'POST', pattern: '/api/search-pool',
+      handler: async ({ req, res, json }) => {
+        const command = await bodyOf(req);
+        try {
+          const pool = updateSearchPool(command);
+          return json(res, 200, { pool, providers: listSearchPoolProviders() });
+        } catch (error) {
+          return json(res, 400, { error: error.message });
+        }
+      }
+    },
+    {
       method: 'GET', pattern: '/api/search-providers',
       handler: async ({ res, json }) => {
         const list = (getConfig().webSearch?.providers || []).map((p) => ({
@@ -652,7 +663,10 @@ export function createRoutes(deps) {
         try {
           const body = await bodyOf(req);
           const provId = String(body.providerId ?? '').trim();
-          const r = await customSearch('qq agent 测试', provId || null);
+          const query = 'QQ Agent 搜索测试';
+          const r = body.builtin === 'tavily'
+            ? await tavilySearch(query)
+            : await customSearch(query, provId || null);
           return json(res, 200, { ok: true, result: { ok: true, count: r.results.length, sample: r.results[0]?.title || '', latencyMs: Date.now() - startedAt } });
         } catch (error) {
           return json(res, 200, { ok: true, result: { ok: false, note: String(error?.message ?? error), latencyMs: Date.now() - startedAt } });

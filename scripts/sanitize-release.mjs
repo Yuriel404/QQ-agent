@@ -29,6 +29,8 @@ const SCAN_ONLY = args.includes('--scan');
 
 const log = (...a) => console.log(...a);
 const actions = [];
+const searchPoolFile = /^search-pool(?:\.json|\.[\w.-]+\.tmp)$/;
+const remainingPoolFiles = [];
 
 /**
  * 删除一个 data 下的文件/目录。
@@ -115,7 +117,7 @@ function resetConfig() {
 
   // ── 搜索服务 Key（含自定义的多个）──
   if (cfg.webSearch) {
-    for (const k of ['deepseek', 'zhipu', 'bocha', 'baidu', 'metaso', 'custom']) {
+    for (const k of ['deepseek', 'zhipu', 'bocha', 'baidu', 'metaso', 'tavily', 'custom']) {
       if (cfg.webSearch[k] && 'apiKey' in cfg.webSearch[k]) {
         cfg.webSearch[k].apiKey = '';
         cleared.push(`webSearch.${k}.apiKey`);
@@ -233,11 +235,13 @@ function scanSecrets() {
       // 密钥文件名（无扩展名也命中）：读出来当文本扫。
       // corrupt 备份按前缀命中 —— 它是坏配置的完整原文（含真实密钥）。
       const isSecretName = SECRET_FILE_NAMES.has(e.name)
+        || searchPoolFile.test(e.name)
         || e.name.endsWith('.key')
         || /^config\.json\.corrupt-/.test(e.name);
       if (!isSecretName && !TEXT_EXT.has(path.extname(e.name).toLowerCase())) continue;
       const relPath = path.relative(ROOT, full).replace(/\\/g, '/');
       if (SKIP_FILE.has(relPath)) continue;
+      if (searchPoolFile.test(e.name)) remainingPoolFiles.push(relPath);
       // 密钥类文件直接按"发现可疑"上报（无论内容格式）
       if (isSecretName) {
         found.push(`${relPath} → 密钥文件（${e.name.endsWith('.key') ? '*.key' : e.name}）`);
@@ -275,6 +279,9 @@ if (!SCAN_ONLY) {
   //    同样的"三重穿透"。按前缀 glob 全部删除。
   for (const f of fs.readdirSync(DATA_DIR).filter((n) => /^config\.json\.corrupt-/.test(n))) {
     rmrf(f, '坏配置备份（含真实密钥）');
+  }
+  for (const file of fs.readdirSync(DATA_DIR).filter((name) => searchPoolFile.test(name))) {
+    rmrf(file, '搜索池密钥与用量');
   }
   rmrf('messages', '聊天存档');
   rmrf('sessions', '会话留档');
@@ -440,6 +447,10 @@ if (!SCAN_ONLY) {
 // .trash 里是被改名但没删掉的聊天记录/记忆（杀软占用等场景）。
 // 压缩项目目录时它仍在包里 —— 这里必须硬阻断，而不是提示"可以压缩分享了"。
 if (!SCAN_ONLY && !DRY) {
+  if (remainingPoolFiles.length) {
+    log('⛔ 发布中止：发布目录内仍有搜索池凭据文件。移出对应数据备份后再发布。');
+    process.exit(1);
+  }
   const trashDir = path.join(DATA_DIR, '.trash');
   let trashLeft = 0;
   try { trashLeft = fs.readdirSync(trashDir).length; } catch { /* 目录不存在 = 干净 */ }

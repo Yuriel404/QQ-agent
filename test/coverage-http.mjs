@@ -11,8 +11,9 @@
 // 运行：node test/coverage-http.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
-import { createChecker, bootApp, ROOT, sleep } from './_harness.mjs';
+import { createChecker, bootApp, listen, ROOT, sleep } from './_harness.mjs';
 
 const c = createChecker('HTTP 接口层覆盖');
 
@@ -426,6 +427,66 @@ c.section('5. 提供商 / 模型目录 / 搜索服务');
 
   // 搜索服务
   let spId = null;
+  await c.check('搜索池：控制台配置 → web_search 轮换、跳过失败 Key 并回退到下一服务', async () => {
+    const before = (await hit('GET', '/api/search-pool')).data;
+    assert.equal(before.pool.enabled, false);
+    assert.ok(before.providers.some((p) => p.id === 'tavily' && p.supportsKeys));
+    const original = app.getConfig().webSearch;
+    const calls = [];
+    const upstream = http.createServer((req, res) => {
+      const key = req.headers.authorization;
+      calls.push([req.url, key]);
+      req.resume();
+      if (req.url === '/first' && calls.length === 3) {
+        res.writeHead(503);
+        return res.end('temporarily unavailable');
+      }
+      const result = req.url === '/first'
+        ? { results: [{ title: '首选服务', url: 'https://example.org/first', content: '摘要' }] }
+        : { code: 200, data: { webPages: { value: [{ name: '备用服务', url: 'https://example.org/backup', snippet: '摘要' }] } } };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(result));
+    });
+    const port = await listen(upstream);
+    const base = 'http://127.0.0.1:' + port;
+    const command = async (body) => {
+      const result = await hit('POST', '/api/search-pool', { body });
+      assert.equal(result.status, 200, result.text);
+      assert.ok(!result.text.includes('pool-test-token'));
+      return result.data.pool;
+    };
+    try {
+      app.updateConfig({ webSearch: { tavily: { baseUrl: base + '/first' }, bocha: { baseUrl: base + '/backup' } } });
+      await command({ action: 'add', provider: 'tavily', label: 'A', apiKey: 'pool-test-token-a', quota: 1, period: 'day' });
+      await command({ action: 'add', provider: 'tavily', label: 'B', apiKey: 'pool-test-token-b', quota: 8, period: 'month' });
+      await command({ action: 'add', provider: 'bocha', label: 'C', apiKey: 'pool-test-token-c' });
+      await command({ action: 'configure', enabled: true, chain: ['tavily', 'bocha'], failureThreshold: 1 });
+      const { buildToolDefs } = await import('../src/tools.js');
+      const tool = buildToolDefs().find((entry) => entry.id === 'web_search');
+      for (const title of ['首选服务', '首选服务', '备用服务', '备用服务']) {
+        const result = await tool.execute({}, { query: '搜索池测试' });
+        assert.ok(!result.isError, result.content);
+        assert.equal(JSON.parse(result.content).results[0].title, title);
+      }
+      assert.deepEqual(calls, [
+        ['/first', 'Bearer pool-test-token-a'], ['/first', 'Bearer pool-test-token-b'],
+        ['/first', 'Bearer pool-test-token-b'], ['/backup', 'Bearer pool-test-token-c'], ['/backup', 'Bearer pool-test-token-c']
+      ]);
+      const view = await hit('GET', '/api/search-pool');
+      assert.ok(!view.text.includes('pool-test-token'));
+      assert.deepEqual(view.data.pool.keys.map((k) => [k.label, k.used, k.status]).sort(), [
+        ['A', 1, 'exhausted'], ['B', 2, 'failed'], ['C', 2, 'ready']
+      ]);
+      assert.equal((await hit('POST', '/api/search-pool', { origin: 'http://evil.example.com', body: { action: 'configure', enabled: false } })).status, 403);
+    } finally {
+      await command({ action: 'configure', enabled: false, chain: [] });
+      const { pool } = (await hit('GET', '/api/search-pool')).data;
+      for (const key of pool.keys) await command({ action: 'remove', id: key.id });
+      app.updateConfig({ webSearch: { tavily: original.tavily, bocha: original.bocha } });
+      await new Promise((resolve) => upstream.close(resolve));
+    }
+  });
+
   await c.check('GET /api/search-providers：列表不含明文 Key', async () => {
     const r = await hit('GET', '/api/search-providers');
     assert.equal(r.status, 200);
@@ -847,6 +908,20 @@ c.section('13. 安全回归');
   await c.check('GET /api/search-key：未知搜索服务返回 400', async () => {
     const r = await hit('GET', '/api/search-key?field=不存在的服务');
     assert.equal(r.status, 400);
+  });
+
+  await c.check('Tavily 密钥可由控制台管理，配置接口只返回是否已保存', async () => {
+    const key = 'tavily-http-test-key';
+    const save = await hit('POST', '/api/config', { body: { webSearch: { tavily: { apiKey: key } } } });
+    assert.equal(save.data.config.webSearch.tavily.hasApiKey, true);
+    assert.ok(!save.text.includes(key));
+    const config = await hit('GET', '/api/config');
+    assert.ok(!config.text.includes(key));
+    const revealPath = '/api/search-key?field=tavily';
+    assert.equal((await hit('GET', revealPath, { origin: EVIL })).status, 403);
+    assert.equal((await hit('GET', revealPath)).data.apiKey, key);
+    const clear = await hit('POST', '/api/config', { body: { webSearch: { tavily: { apiKey: '' } } } });
+    assert.equal(clear.data.config.webSearch.tavily.hasApiKey, false);
   });
 
   await c.check('GET /api/onebot-token：控制台可读令牌明文 + 未知类型 400', async () => {

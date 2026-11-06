@@ -736,7 +736,7 @@ function registerAllTools() {
   registerTool({
     id: 'web_search',
     name: '联网搜索',
-    description: '联网搜索（Bing），返回标题/URL/摘要列表。适用：实时信息、新闻热点、网络用语/梗的含义、自己不确定的事实。可以换关键词连续搜 2~3 次；对最相关的 1~2 个结果用 web_fetch 读正文，不要只看摘要。',
+    description: '通过已配置的搜索服务联网搜索，返回标题/URL/摘要列表。适用：实时信息、新闻热点、网络用语/梗的含义、自己不确定的事实。可以换关键词连续搜 2~3 次；对最相关的 1~2 个结果用 web_fetch 读正文，不要只看摘要。',
     category: 'web',
     icon: '🔍',
     requiresSearch: true,
@@ -747,7 +747,7 @@ function registerAllTools() {
     },
     async execute(ctx, args) {
       try {
-        const result = await webSearch(String(args.query ?? ''));
+        const result = await webSearch(String(args.query ?? ''), ctx.signal);
         if (!result.results.length) {
           return ok({ query: result.query, results: [], note: '没有搜到结果，试试换关键词或更具体的说法。' });
         }
