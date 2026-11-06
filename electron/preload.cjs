@@ -13,10 +13,5 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('qqAgentShell', {
   refocus: () => {
     try { ipcRenderer.send('app-refocus'); } catch { /* ignore */ }
-  },
-  // 主进程（Node 网络栈）连通性探测：与渲染层 fetch 结果对照，
-  // 定位"Chromium 网络栈被本机软件压制"还是"机器出口对目标域整体异常"
-  captchaNetProbe: () => ipcRenderer.invoke('qqa-captcha-net-probe'),
-  // session 层阿里域重定向拦截器的注册状态（判断新代码是否真的在跑）
-  captchaInterceptorStatus: () => ipcRenderer.invoke('qqa-captcha-interceptor-status')
+  }
 });

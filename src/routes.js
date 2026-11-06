@@ -17,7 +17,7 @@ import { getConfig, updateConfig, deepMerge as deepMergeConfig, DATA_DIR } from 
 import { customSearch } from './web-search.js';
 import { listModels, chatCompletion, resolveApiKey, estimateCost, cacheHitRate } from './llm.js';
 import { resolveOfficialPrice, listOfficialPrices } from './model-prices.js';
-import { refreshPriceFeed, priceFeedStatus, initPriceFeed } from './price-feed.js';
+import { refreshPriceFeed, priceFeedStatus } from './price-feed.js';
 import {
   currentProviders, setProviderKey, testAllProviders, testOneProvider,
   testModelChat, fetchModelsFrom, upsertProvider, addModelsToProvider, removeModelFromProvider, removeProvider
@@ -29,9 +29,6 @@ import { logger } from './logger.js';
 import { skillManager } from './skills/manager.js';
 import { getSkillConfig, setSkillConfig, setSkillEnabled, listConfiguredSkillIds } from './skills/config.js';
 import { availabilityOf, listTools, CATEGORY_META } from './tool-registry.js';
-import { safeFetchBinary, browseLockState } from './safe-fetch.js';
-import { getGlobalBlocklist, updateGlobalBlocklist, FIXED_PRICE_FEED_URL } from './community.js';
-import { listAccounts, removeAccount, loginAccount, publishModule, verifyInstallCodes, installByCode } from './market.js';
 import { detectDialect as detectThinkingDialect } from './thinking.js';
 
 /**
@@ -222,13 +219,13 @@ export function createRoutes(deps) {
       handler: async ({ res, json, url }) => json(res, 200, {
         prices: listOfficialPrices(),
         current: resolveOfficialPrice(String(url.searchParams.get('model') || getConfig().api?.model || '')),
-        remote: { ...priceFeedStatus(), url: FIXED_PRICE_FEED_URL }
+        remote: priceFeedStatus()
       })
     },
     {
       method: 'POST', pattern: '/api/model-prices/refresh',
       handler: async ({ res, json }) => {
-        const st = await refreshPriceFeed(FIXED_PRICE_FEED_URL);
+        const st = await refreshPriceFeed();
         return json(res, 200, {
           ok: st.ok, remote: st,
           prices: listOfficialPrices(),
@@ -768,135 +765,6 @@ export function createRoutes(deps) {
         });
       }
     },
-    {
-      method: 'GET', pattern: '/api/community/blocklist',
-      handler: async ({ res, json }) => json(res, 200, { ok: true, ids: getGlobalBlocklist() })
-    },
-    {
-      method: 'POST', pattern: '/api/community/blocklist',
-      handler: async ({ req, res, json }) => {
-        const body = await bodyOf(req);
-        const ids = Array.isArray(body?.ids) ? body.ids : [];
-        try {
-          const { ids: actual, warning } = await updateGlobalBlocklist(ids, { mode: String(body?.mode || 'replace') });
-          emit('status', { communityBlocklistUpdated: true });
-          return json(res, 200, { ok: true, ids: actual, warning: warning || '' });
-        } catch (error) {
-          return json(res, 502, { ok: false, error: `云端屏蔽名单更新失败：${String(error?.message ?? error)}` });
-        }
-      }
-    },
-
-    // ── 社区市场：账号 + 发布 + 口令安装（全部代理官网，浏览器不直连）──────
-    // 凭据存 data/account.json（不走 config：GET /api/config 会脱敏回传整个配置，
-    // 塞进 config 等于自造泄露面）。所有端点失败都返回 502 + 服务器原始文案。
-    {
-      method: 'GET', pattern: '/api/market/accounts',
-      handler: async ({ res, json }) => {
-        const accounts = listAccounts().map((a) => ({ username: a.username, savedAt: a.savedAt }));
-        return json(res, 200, { ok: true, accounts });
-      }
-    },
-    {
-      // 登录 / 注册。mode: login | register。注册三要素：登录 ID + 展示用户名 + 密码。
-      // 成功后凭据自动落盘。
-      method: 'POST', pattern: '/api/market/login',
-      handler: async ({ req, res, json }) => {
-        const body = await bodyOf(req);
-        try {
-          const r = await loginAccount({
-            loginId: String(body?.loginId || ''),
-            displayName: String(body?.displayName || ''),
-            password: String(body?.password || ''),
-            mode: body?.mode === 'register' ? 'register' : 'login'
-          });
-          return json(res, 200, { ok: true, account: r.account, accounts: r.accounts.map((a) => ({ username: a.username, savedAt: a.savedAt })) });
-        } catch (error) {
-          return json(res, 502, { ok: false, error: String(error?.message ?? error) });
-        }
-      }
-    },
-    {
-      // 登出（删本地凭据 + 吊销远端 token）
-      method: 'POST', pattern: '/api/market/logout',
-      handler: async ({ req, res, json }) => {
-        const body = await bodyOf(req);
-        const username = String(body?.username || '');
-        if (!username) return json(res, 400, { ok: false, error: '缺少 username' });
-        const accounts = await removeAccount(username);
-        return json(res, 200, { ok: true, accounts: accounts.map((a) => ({ username: a.username, savedAt: a.savedAt })) });
-      }
-    },
-    {
-      // 发布一个已安装的 skill/plugin 到市场（待审核）。
-      // body: { kind: 'skill'|'plugin', id, displayName, description, accountUsername }
-      method: 'POST', pattern: '/api/market/publish',
-      handler: async ({ req, res, json }) => {
-        const body = await bodyOf(req);
-        const kind = body?.kind === 'plugin' ? 'plugin' : 'skill';
-        const id = String(body?.id || '');
-        if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(id)) {
-          return json(res, 400, { ok: false, error: `无效的 ${kind} id：${id}` });
-        }
-        const acc = listAccounts().find((a) => a.username === String(body?.accountUsername || ''));
-        if (!acc) return json(res, 401, { ok: false, error: '请先选择一个已登录的账号' });
-        try {
-          const r = await publishModule({
-            kind, id,
-            displayName: String(body?.displayName || ''),
-            description: String(body?.description || ''),
-            token: acc.token,
-            // 阿里云验证码验签参数：远端市场对发布强制要求（一次性，前端弹出验证后拿到）
-            captchaVerifyParam: String(body?.captchaVerifyParam || '')
-          });
-          return json(res, 200, {
-            ok: true, item: r.item || null,
-            renamedTo: r.renamedTo || null,
-            note: r.note || ''
-          });
-        } catch (error) {
-          return json(res, 502, { ok: false, error: String(error?.message ?? error) });
-        }
-      }
-    },
-    {
-      // 口令批量校验：body { codes: [...] } → 每个口令的条目摘要
-      method: 'POST', pattern: '/api/market/verify',
-      handler: async ({ req, res, json }) => {
-        const body = await bodyOf(req);
-        const codes = (Array.isArray(body?.codes) ? body.codes : [body?.code])
-          .map((c) => String(c ?? '').trim().toUpperCase())
-          .filter((c) => /^[A-Z0-9]{1,32}$/.test(c))
-          .slice(0, 30);
-        if (!codes.length) return json(res, 400, { ok: false, error: '没有有效的口令' });
-        try {
-          const results = await verifyInstallCodes(codes);
-          return json(res, 200, { ok: true, results });
-        } catch (error) {
-          return json(res, 502, { ok: false, error: String(error?.message ?? error) });
-        }
-      }
-    },
-    {
-      // 口令安装：body { code, entry }（entry = verify 阶段拿到的条目，含服务器判定的 type）。
-      // 类型路由由服务器 entry.type 决定：技能页输插件口令也会装进 plugins/。
-      method: 'POST', pattern: '/api/market/install',
-      handler: async ({ req, res, json }) => {
-        const body = await bodyOf(req);
-        const code = String(body?.code || '').trim().toUpperCase();
-        if (!/^[A-Z0-9]{4,12}$/.test(code)) return json(res, 400, { ok: false, error: '口令格式无效' });
-        try {
-          const r = await installByCode({ code, verified: body?.entry || null });
-          // 安装完立即重扫，让新模块马上出现在页签里（热重载 watcher 也行，
-          // 但目录删除重建的场景 watcher 会丢事件 —— reload 是唯一可靠路径）
-          try { await reloadSkills({ reason: 'market-install' }); } catch { /* 重扫失败不影响安装结果 */ }
-          return json(res, 200, { ok: true, kind: r.kind, id: r.id, dir: r.dir });
-        } catch (error) {
-          return json(res, 502, { ok: false, error: String(error?.message ?? error) });
-        }
-      }
-    },
-
     // ── Skill 管理 ─────────────────────────────────────────────────────
     // 统一开关入口：前端只改这里，模块内部一律读 skillManager。
     {
@@ -1077,7 +945,6 @@ export function createRoutes(deps) {
         store.setMaxPerChat(next.store?.maxMessagesPerChat ?? 0);
         sessions?.setKeepFiles?.(next.store?.keepSessionFiles ?? 0);
         if (next.proactive?.enabled) orchestrator.startProactiveLoop(); else orchestrator.stopProactiveLoop();
-        initPriceFeed(FIXED_PRICE_FEED_URL);
         emit('status', { configUpdated: true });
         // ⚠️ 必须脱敏：updateConfig 返回的是内存里的活配置对象，含明文 apiKey /
         //    accessToken / dshProviderKeys。GET /api/config 一直是脱敏的，
@@ -1326,46 +1193,6 @@ export function createRoutes(deps) {
         return json(res, 200, { chatKey, messages });
       }
     },
-    {
-      method: 'POST', pattern: '/api/media-data',
-      handler: async ({ req, res, json }) => {
-        try {
-          const body = await readBody(req);
-          const items = Array.isArray(body?.items) ? body.items.slice(0, 20) : [];
-          const mimeOf = (p) => /\.png$/i.test(p) ? 'image/png' : /\.gif$/i.test(p) ? 'image/gif' : /\.webp$/i.test(p) ? 'image/webp' : 'image/jpeg';
-          const fileToDataUrl = (fp) => {
-            const st = fs.statSync(fp);
-            if (st.size > 15 * 1024 * 1024) return null;
-            return `data:${mimeOf(fp)};base64,${fs.readFileSync(fp).toString('base64')}`;
-          };
-          // 下载一律走 safe-fetch：这里的 url 来自请求体（前端/任何本机进程都能构造），
-          // 直接 fetch 等于给了一个"让本机去抓内网"的 SSRF 入口。
-          const safeToDataUrl = async (rawUrl) => {
-            const { buffer, contentType } = await safeFetchBinary(String(rawUrl), 15 * 1024 * 1024, { browseLocked: browseLockState().enabled });
-            if (!buffer?.length || buffer.length > 15 * 1024 * 1024) return null;
-            const type = String(contentType || 'image/jpeg').split(';')[0].trim();
-            if (!/^image\//i.test(type)) return null;
-            return `data:${type};base64,${buffer.toString('base64')}`;
-          };
-          const results = [];
-          for (const it of items) {
-            let dataUrl = null;
-            try {
-              const ret = await onebot.call('get_image', { file: String(it?.file || '') });
-              if (ret?.file && fs.existsSync(String(ret.file))) dataUrl = fileToDataUrl(String(ret.file));
-              if (!dataUrl && ret?.url) dataUrl = await safeToDataUrl(ret.url);
-            } catch { /* 缓存没有 / 地址不可信就走下一条 */ }
-            if (!dataUrl && it?.url) {
-              try { dataUrl = await safeToDataUrl(it.url); } catch { /* 过期或不可信就放弃 */ }
-            }
-            results.push(dataUrl ? { dataUrl } : null);
-          }
-          return json(res, 200, { ok: true, results });
-        } catch (error) {
-          return json(res, 200, { ok: false, error: String(error?.message ?? error), results: [] });
-        }
-      }
-    },
 
     // ── 群成员 / 会话控制 ────────────────────────────────────────────
     {
@@ -1500,78 +1327,6 @@ export function createRoutes(deps) {
         const level = String(body.level || 'info');
         logger.setLevel(level);
         return json(res, 200, { ok: true, level: logger.getLevel() });
-      }
-    },
-
-    // ── 验证码请求转发（2026-09-26）────────────────────────────────
-    // 部分用户机器上 Chromium 渲染层对 *.aliyuncs.com / *.alicdn.com 的请求被
-    // 本机安全软件按进程+域名压制（同机 Node 层、系统 curl 均正常），SDK 走不通。
-    // 由主进程 Node 层（undici，网络栈独立且实测可达）代为转发。
-    // 安全边界（防 SSRF）：目标仅允许 https + aliyuncs/alicdn 两族域名后缀；
-    // 不跟随重定向；body 上限 8MB；响应上限 16MB；超时 15s。
-    {
-      method: '*', pattern: /^\/api\/captcha-forward\/?$/,
-      handler: async ({ req, res, json, url }) => {
-        const target = String((url && url.searchParams.get('u')) || '');
-        let parsed;
-        try { parsed = new URL(target); } catch {
-          return json(res, 400, { ok: false, error: '缺少或非法的 u 参数' });
-        }
-        if (parsed.protocol !== 'https:' ||
-            !/^[a-zA-Z0-9.-]+\.(aliyuncs\.com|alicdn\.com)$/.test(parsed.hostname)) {
-          return json(res, 403, { ok: false, error: `目标不在转发白名单（仅 https 的 aliyuncs/alicdn 域）：${parsed.hostname}` });
-        }
-        // 读原始 body（POST 等需要；上限 8MB）
-        const chunks = [];
-        let size = 0;
-        try {
-          await new Promise((resolve, reject) => {
-            req.on('data', (c) => {
-              size += c.length;
-              if (size > 8 * 1024 * 1024) { reject(new Error('body too large')); req.destroy(); return; }
-              chunks.push(c);
-            });
-            req.on('end', resolve);
-            req.on('error', reject);
-          });
-        } catch { /* 读失败按空 body 处理 */ }
-        const reqBody = Buffer.concat(chunks);
-
-        // 复制请求头（剥掉 hop-by-hop 与本机信息头）
-        const fwdHeaders = {};
-        for (const [k, v] of Object.entries(req.headers)) {
-          const kl = k.toLowerCase();
-          if (['host', 'cookie', 'connection', 'content-length', 'origin', 'referer',
-               'accept-encoding', 'transfer-encoding', 'upgrade', 'expect'].includes(kl)) continue;
-          fwdHeaders[k] = v;
-        }
-        if (reqBody.length && !fwdHeaders['content-type']) fwdHeaders['content-type'] = 'application/octet-stream';
-
-        try {
-          const up = await fetch(parsed.href, {
-            method: req.method,
-            headers: fwdHeaders,
-            body: (req.method === 'GET' || req.method === 'HEAD' || reqBody.length === 0) ? undefined : reqBody,
-            redirect: 'manual',
-            signal: AbortSignal.timeout(15000),
-          });
-          const buf = Buffer.from(await up.arrayBuffer());
-          if (buf.length > 16 * 1024 * 1024) {
-            return json(res, 502, { ok: false, error: '转发响应过大（>16MB）' });
-          }
-          const resHeaders = {};
-          up.headers.forEach((v, k) => {
-            const kl = k.toLowerCase();
-            if (['transfer-encoding', 'content-encoding', 'content-length', 'connection', 'keep-alive'].includes(kl)) return;
-            resHeaders[k] = v;
-          });
-          resHeaders['access-control-allow-origin'] = '*';   // 同源请求用不到，留作兜底
-          res.writeHead(up.status, resHeaders);
-          res.end(buf);
-        } catch (e) {
-          return json(res, 502, { ok: false, error: `转发失败：${String(e?.cause?.code || e?.message || e).slice(0, 120)}` });
-        }
-        return undefined;   // 已自行写响应
       }
     },
   ];

@@ -66,7 +66,7 @@ function rmrf(rel, label) {
 }
 
 /**
- * 删除项目根目录的 community.key（社区管理密钥）。
+ * 清理升级前可能留在项目根目录的旧版管理密钥。
  * 与 data/ 下的运行时文件不同，它在项目根 —— rmrf 的路径拼的是 DATA_DIR，
  * 所以单独处理。删除失败必须阻断发布（scanSecrets 也会再次兜底告警）。
  */
@@ -265,8 +265,7 @@ log('');
 
 if (!SCAN_ONLY) {
   resetConfig();
-  // ⚠️ 根目录的社区管理密钥：发布包绝不能带（拿着它就能覆盖云端共享屏蔽名单）。
-  //    它无扩展名，历史上既不进 rmrf 清单、也不被扩展名扫描覆盖 —— 三重遗漏。
+  // 旧版管理密钥可能仍留在升级过的目录中。
   rmrfRootKey();
   // ⚠️ 坏配置备份（config.json.corrupt-<ts>，config.js 的 loadConfig 产物）：
   //    内含用户**真实的 apiKey/令牌/白名单**（备份的是损坏前的完整旧配置）。
@@ -285,10 +284,7 @@ if (!SCAN_ONLY) {
   rmrf('semantic-cards', '语义卡记忆');
   rmrf('cross-turn', '跨轮状态（含机器人草稿）');
   rmrf('cross-chat', '跨群感知状态');
-  // 市场账号凭据：长期 token（拿到即可冒充该账号发布）。
-  // 注意它与 config 的脱敏链路完全独立 —— market.js 刻意不把凭据放 config，
-  // 于是 config 的清洗管不到它，必须在这里删。
-  rmrf('account.json', '市场账号凭据');
+  rmrf('account.json', '旧版市场账号凭据');
   // conversation-memory 的成本护栏与用量快照：含 chatKey（群号）与调用计数
   rmrf('cost-guard.json', '记忆成本护栏状态');
   rmrf('usage-daily.json', '按日用量快照（含 chatKey）');
@@ -297,13 +293,13 @@ if (!SCAN_ONLY) {
   rmrf('media-cache', '媒体下载缓存');
   // video-reader 的转码缓存（群友发过的视频转 480p mp4 的副本）
   rmrf('video-cache', '视频转码缓存');
-  // 遥测：匿名但属于使用痕迹（installId 关联本机）
+  // 旧版上报过的安装标识也属于使用痕迹。
   rmrf('telemetry.json', '遥测安装标识');
   rmrf('telemetry-totals.json', '遥测累计用量');
   rmrf('stickers.json', '表情库');
   // 收藏表情转存的图片本体（群聊里收集的表情/图片，使用痕迹）
   rmrf('sticker-images', '表情图片');
-  // 云端共享屏蔽名单缓存：含被拉黑者的 QQ 号（第三方隐私）
+  // 旧版云端屏蔽缓存中留有 QQ 号。
   rmrf('cloud-global-blocklist.json', '云端屏蔽名单缓存');
   rmrf('usage-today.json', '今日用量');
   rmrf('feedbacks.json', '反馈记录');

@@ -57,20 +57,7 @@ function renderSettingsSidebar() {
     </div>
     <div class="settings-menu">
       ${menu.map(([id, label]) => `<button class="settings-menu-item ${state.settingsSection === id ? 'active' : ''}" data-section="${id}">${label}${id === 'desktop' && (typeof updateAvailable !== 'undefined' && updateAvailable) ? '<span class="update-dot" title="发现新版本"></span>' : ''}</button>`).join('')}
-      <button class="settings-menu-item egg-hot" id="qrcode-egg-btn">！？群群？！</button>
     </div>`;
-  // 群二维码彩蛋：点一下弹出，再点屏幕任意位置关闭
-  // 图片 onerror 兜底：group-qrcode.jpg 正常随 ui/ 分发，
-  // 万一分发包缺了这张图，显示一句说明而不是一个裂图图标。
-  sidebar.querySelector('#qrcode-egg-btn')?.addEventListener('click', () => {
-    const ov = document.createElement('div');
-    ov.className = 'qrcode-egg-overlay';
-    ov.innerHTML = '<img src="group-qrcode.jpg" alt="群二维码" '
-      + 'onerror="this.remove(); this.parentElement?.insertAdjacentText(\'afterbegin\', \'二维码图片缺失：请把 group-qrcode.jpg 放到 ui/ 目录下\')" />';
-    const close = () => closeAnimatedOverlay(ov);
-    ov.addEventListener('click', close);
-    document.body.appendChild(ov);
-  });
   sidebar.querySelectorAll('.settings-menu-item').forEach((el) => {
     el.addEventListener('click', () => {
       // 切区块 = 整页表单重建：先把防抖窗口内挂起的保存发出，
@@ -1342,7 +1329,7 @@ function renderModulePage(kind) {
   if (!items.length) {
     const emptyHtml = `<div class="usage-wrap">
       <div class="usage-head"><h2>${esc(meta.title)}</h2>
-        <button class="btn btn-small" id="${esc(meta.tab)}-add-btn" title="从市场口令安装，或查看自建指南">＋ 添加${meta.kind === 'skill' ? '技能' : '插件'}</button>
+        <button class="btn btn-small" id="${esc(meta.tab)}-add-btn" title="查看本地创建指南">＋ 添加${meta.kind === 'skill' ? '技能' : '插件'}</button>
         <div class="usage-days">
           <button class="btn btn-small" id="${esc(meta.tab)}-refresh-btn">刷新</button>
         </div></div>
@@ -1365,7 +1352,7 @@ function renderModulePage(kind) {
     byCat.get(c).push(s);
   }
 
-  // ── 卡片：单列一行，名称+简介常显，上传/设置钉在行尾 ──
+  // ── 卡片：单列一行，名称+简介常显，设置按钮在行尾 ──
   // 不再做正反面翻转（悬停才看简介）；按钮固定在内容框后侧，不随文字换行。
   const card = (s) => {
     const loadedOk = s.loaded;
@@ -1385,7 +1372,6 @@ function renderModulePage(kind) {
     const settingsBtn = allFields.length
       ? `<button class="mcard-gear" data-skill-id="${esc(s.id)}" title="设置（${allFields.length} 项）" aria-label="打开 ${esc(s.name)} 的设置">⚙</button>`
       : '';
-    const uploadBtn = `<button class="mcard-upload" data-skill-id="${esc(s.id)}" data-skill-kind="${kind}" title="上传到市场" aria-label="上传 ${esc(s.name)} 到市场">⬆</button>`;
     const haystack = [s.id, s.name, s.description, s.dir].filter(Boolean).join(' ').toLowerCase();
     return `
     <div class="mcard ${stateCls}" data-skill-id="${esc(s.id)}" data-search="${esc(haystack)}" role="button" tabindex="0" title="${esc(stateTitle)}">
@@ -1395,7 +1381,7 @@ function renderModulePage(kind) {
         <div class="mcard-desc">${esc(s.description || '（没有写介绍）')}</div>
         ${errLine ? `<div class="mcard-err">${esc(errLine)}</div>` : ''}
       </div>
-      <div class="mcard-acts">${uploadBtn}${settingsBtn}</div>
+      <div class="mcard-acts">${settingsBtn}</div>
     </div>`;
   };
 
@@ -1419,7 +1405,7 @@ function renderModulePage(kind) {
   const html = `<div class="usage-wrap">
       <div class="usage-head">
         <h2>${esc(meta.title)}</h2>
-        <button class="btn btn-small" id="${esc(meta.tab)}-add-btn" title="从市场口令安装，或查看自建指南">＋ 添加${meta.kind === 'skill' ? '技能' : '插件'}</button>
+        <button class="btn btn-small" id="${esc(meta.tab)}-add-btn" title="查看本地创建指南">＋ 添加${meta.kind === 'skill' ? '技能' : '插件'}</button>
         <input type="search" class="module-search" id="module-search-${esc(meta.tab)}"
           placeholder="搜索${meta.kind === 'skill' ? '技能' : '插件'}名称 / 简介…" autocomplete="off" />
         <div class="usage-days">
@@ -1449,10 +1435,7 @@ function renderPluginsPage() { return renderModulePage('plugin'); }
 function bindModulePageEvents(kind) {
   const meta = MODULE_KINDS[kind];
   if (!meta) return;
-  // 「＋ 添加」入口（标题旁）：打开添加模态框（去市场口令安装 / 自建指南）。
-  // ⚠️ 这个入口曾经从模板里消失过 —— openAddModuleModal 变成没人调用的孤本，
-  // 技能/插件页直接失去"添加"能力。按钮与绑定必须成对存在（2026-09-26 修复）。
-  $(`#${meta.tab}-add-btn`)?.addEventListener('click', () => openAddModuleModal(kind));
+  $(`#${meta.tab}-add-btn`)?.addEventListener('click', () => openCreateModuleGuide(kind));
   $(`#${meta.tab}-refresh-btn`)?.addEventListener('click', () => loadModulePage(kind, { rescan: true }));
   // 残留配置清理（只在技能页渲染，按钮也只在这一页出现）
   $('#skills-cleanup-btn')?.addEventListener('click', async () => {
@@ -1480,13 +1463,6 @@ function bindModulePageEvents(kind) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();   // 齿轮在卡片内部，点它不能触发整卡开关
       openSkillSettings(btn.dataset.skillId);
-    });
-  });
-  // 上传到市场（⬆ 钮）：同样 stopPropagation，且带上卡片所属类型
-  scope.querySelectorAll('.mcard-upload').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openMarketUploadModal(btn.dataset.skillKind || kind, btn.dataset.skillId);
     });
   });
   // ── 整卡即开关：点击卡片任意处切换启停（复用原 skill-toggle 的请求链）──

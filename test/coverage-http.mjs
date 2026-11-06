@@ -11,9 +11,8 @@
 // 运行：node test/coverage-http.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import http from 'node:http';
 import path from 'node:path';
-import { createChecker, bootApp, listen, ROOT, sleep } from './_harness.mjs';
+import { createChecker, bootApp, ROOT, sleep } from './_harness.mjs';
 
 const c = createChecker('HTTP 接口层覆盖');
 
@@ -756,50 +755,15 @@ c.section('10. 进程管理（安全分支）');
   });
 }
 
-// ── 11. 媒体取图（含 SSRF 回归） ─────────────────────────────────────────
-c.section('11. 媒体取图与 SSRF');
-{
-  let internalHit = 0;
-  const SECRET = 'INTERNAL-SECRET-CONTENT';
-  const internal = http.createServer((_req, res) => {
-    internalHit++;
-    res.writeHead(200, { 'content-type': 'image/png' });
-    res.end(Buffer.from(SECRET));
-  });
-  const internalPort = await listen(internal);
-
-  await c.check('POST /api/media-data：空 items 安全返回', async () => {
-    const r = await hit('POST', '/api/media-data', { body: { items: [] } });
-    assert.equal(r.status, 200);
-    assert.ok(Array.isArray(r.data.results));
-    assert.equal(r.data.results.length, 0);
-  });
-
-  await c.check('POST /api/media-data：非法 items 不崩溃', async () => {
-    const r = await hit('POST', '/api/media-data', { body: { items: '不是数组' } });
-    assert.equal(r.status, 200);
-    assert.ok(Array.isArray(r.data.results));
-  });
-
-  await c.known(
-    'POST /api/media-data：拒绝内网/环回地址（SSRF 防护）',
-    async () => {
-      internalHit = 0;
-      const r = await hit('POST', '/api/media-data', {
-        body: { items: [{ file: '', url: `http://127.0.0.1:${internalPort}/secret.png` }] }
-      });
-      const leaked = (r.data.results || []).some((x) => {
-        if (!x?.dataUrl) return false;
-        try { return Buffer.from(String(x.dataUrl).split(',')[1] || '', 'base64').toString() === SECRET; } catch { return false; }
-      });
-      assert.equal(internalHit, 0, `本机内网服务被访问了 ${internalHit} 次（SSRF 成立）`);
-      assert.equal(leaked, false, '内网内容被读回并 base64 返回（SSRF 成立）');
-    },
-    '已知：routes.js:941/950 对请求体里的 url 直接 fetch，未走 safe-fetch'
-  );
-
-  internal.close();
-}
+// ── 11. 本地屏蔽设置 ────────────────────────────────────────────────────
+c.section('11. 本地屏蔽设置');
+await c.check('通过配置接口同时保存群内和全局屏蔽名单', async () => {
+  const patch = { blocklist: { '456': ['321'] }, globalBlocklist: ['112233445'] };
+  assert.equal((await hit('POST', '/api/config', { body: patch })).status, 200);
+  const saved = await hit('GET', '/api/config');
+  assert.deepEqual(saved.data.globalBlocklist, patch.globalBlocklist);
+  assert.deepEqual(saved.data.blocklist['456'], patch.blocklist['456']);
+});
 
 // ── 12. 静态文件与路径穿越 ───────────────────────────────────────────────
 c.section('12. 静态文件与路径穿越防护');
@@ -896,90 +860,15 @@ c.section('13. 安全回归');
     assert.ok(p.data && typeof p.data === 'object', 'POST 也应返回预览对象');
   });
 
-  // ── 社区/市场代理接口：远端用假 fetch 顶替（绝不在测试里真连官网）──
-  // 假响应必须同时提供 json() 与 text()：community.js 走 text()，market.js 走 json()。
-  const realFetch = globalThis.fetch;
-  const fakeMarket = async (url, options = {}) => {
-    const target = String(url);
-    // 本机请求（测试 harness 自己的 fetch）原样放行，只劫持官网域名
-    if (target.startsWith('http://127.0.0.1:') || target.startsWith('http://localhost:')) {
-      return realFetch(url, options);
+  await c.check('下线的社区、市场和验证码接口均返回 404', async () => {
+    for (const [method, endpoint] of [
+      ['GET', '/api/community/blocklist'], ['POST', '/api/community/blocklist'],
+      ['POST', '/api/market/install'], ['GET', '/api/market/accounts'],
+      ['GET', '/api/captcha-forward'], ['POST', '/api/media-data']
+    ]) {
+      assert.equal((await hit(method, endpoint)).status, 404, endpoint);
     }
-    const method = String(options.method || 'GET').toUpperCase();
-    const mk = (status, value) => {
-      const bodyText = JSON.stringify(value);
-      return {
-        ok: status < 400, status,
-        json: async () => value,
-        text: async () => bodyText
-      };
-    };
-    if (target.includes('/auth/login') && method === 'POST') {
-      return mk(200, { ok: true, account: { id: 'u1', loginId: 'tester', displayName: '测试者' }, token: 'fake-token-abc' });
-    }
-    if (target.includes('/auth/logout') && method === 'POST') {
-      return mk(200, { ok: true });
-    }
-    if (target.includes('/auth/whoami')) {
-      return mk(200, { ok: true, account: { id: 'u1', loginId: 'tester', displayName: '测试者' } });
-    }
-    if (target.includes('/blocklist')) {
-      return mk(200, { ok: true, ids: ['112233445'], updatedAt: '2026-09-19T00:00:00Z' });
-    }
-    return mk(404, { ok: false, error: 'not found' });
-  };
-  globalThis.fetch = fakeMarket;
-  try {
-    await c.check('GET /api/community/blocklist + POST 追加：走假云端', async () => {
-      const g = await hit('GET', '/api/community/blocklist');
-      assert.equal(g.status, 200);
-      assert.ok(Array.isArray(g.data.ids), 'GET 应返回 ids 数组');
-      const p = await hit('POST', '/api/community/blocklist', {
-        body: JSON.stringify({ ids: ['112233445'], mode: 'add' }),
-        headers: { 'content-type': 'application/json' }
-      });
-      assert.equal(p.status, 200, `POST 追加应 200，实际 ${p.status}：${JSON.stringify(p.data)}`);
-      assert.ok(p.data.ok, 'POST 应成功');
-    });
-
-    await c.check('市场代理：登录保存凭据 + 账号列表 + 登出清空', async () => {
-      const login = await hit('POST', '/api/market/login', {
-        body: JSON.stringify({ loginId: 'tester', password: 'secret-word', mode: 'login' }),
-        headers: { 'content-type': 'application/json' }
-      });
-      assert.equal(login.status, 200, `登录应 200，实际 ${login.status}：${JSON.stringify(login.data)}`);
-      assert.equal(login.data.ok, true, '登录应 ok');
-      const accounts = await hit('GET', '/api/market/accounts');
-      assert.equal(accounts.status, 200);
-      assert.ok(accounts.data.accounts.some((a) => a.username === '测试者' || a.username === 'tester'), `账号列表应含刚登录的账号，实际 ${JSON.stringify(accounts.data.accounts)}`);
-      const out = await hit('POST', '/api/market/logout', {
-        body: JSON.stringify({ username: accounts.data.accounts[0].username }),
-        headers: { 'content-type': 'application/json' }
-      });
-      assert.equal(out.status, 200, `登出应 200，实际 ${out.status}：${JSON.stringify(out.data)}`);
-      const after = await hit('GET', '/api/market/accounts');
-      assert.equal(after.data.accounts.filter((a) => a.username === accounts.data.accounts[0].username).length, 0, '登出后凭据应被移除');
-    });
-
-    // verify / publish：远端返回明确错误 → 502 透传（覆盖"失败也结构化"分支）
-    await c.check('POST /api/market/verify：远端 404 → 502 透传', async () => {
-      const r = await hit('POST', '/api/market/verify', {
-        body: JSON.stringify({ codes: ['ABCDEF'] }),
-        headers: { 'content-type': 'application/json' }
-      });
-      assert.equal(r.status, 502, `远端失败应 502 透传，实际 ${r.status}：${JSON.stringify(r.data)}`);
-    });
-
-    await c.check('POST /api/market/publish：缺 file → 400/502 且不落盘', async () => {
-      const r = await hit('POST', '/api/market/publish', {
-        body: JSON.stringify({}),
-        headers: { 'content-type': 'application/json' }
-      }).catch((e) => ({ status: 0, data: { error: String(e.message) } }));
-      assert.ok(r.status === 400 || r.status === 502, `缺文件应结构化报错（400/502），实际 ${r.status}：${JSON.stringify(r.data)}`);
-    });
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+  });
 
   await c.known(
     '状态变更接口应校验请求来源（CSRF 防护）',

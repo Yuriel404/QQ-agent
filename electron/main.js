@@ -37,41 +37,11 @@ process.on('uncaughtException', (error) => {
 // 否则 dev 模式下会被当成裸 electron.exe，钉任务栏变成 electron 图标
 app.setAppUserModelId('cn.kondius.qq-agent');
 
-// ── 验证码网络诊断（2026-09-26）──
-// 渲染层（Chromium 栈）访问 alicdn/aliyuncs 失败但 kondius.cn 通、系统 curl 直连却正常。
-// 主进程 Node 层（undici，独立于 Chromium 网络服务）做同款探测：
-//   Node 通 + Chromium 挂 → 问题锁定在 Chromium 网络栈（本机安全软件/WFP 过滤按进程压制），
-//   两层都挂 → 机器出口对这些域有整体问题。
-let captchaInterceptorActive = false;
-ipcMain.handle('qqa-captcha-net-probe', async () => {
-  const targets = [
-    ['node:o.alicdn.com', 'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js'],
-    ['node:aliyuncs验签', 'https://captcha.cn-shanghai.aliyuncs.com/'],
-    ['node:aliyuncs-open', 'https://163stu.captcha-open.aliyuncs.com/'],
-    ['node:kondius.cn', 'https://kondius.cn/api/community/health'],
-  ];
-  const out = [];
-  for (const [name, url] of targets) {
-    const t0 = Date.now();
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      out.push(`${name}:通(HTTP ${res.status},${Date.now() - t0}ms)`);
-    } catch (e) {
-      out.push(`${name}:失败(${String(e?.cause?.code || e?.message || e).slice(0, 60)},${Date.now() - t0}ms)`);
-    }
-  }
-  return out.join(' ');
-});
-// 拦截器注册状态：渲染层报错时显示 —— 老进程（未重启）上它必然是"未注册"，
-// 用来一眼区分"方案没生效"和"根本没跑到新代码"。
-ipcMain.handle('qqa-captcha-interceptor-status', () =>
-  captchaInterceptorActive ? '拦截器已注册' : '拦截器未注册（跑的是老进程，需托盘退出后重启）');
-
 // ── 数据目录：始终固定在「应用根目录/data」──
 // Kondius 钦定：所有数据都存在安装目录下，不往 %APPDATA% 塞。
 //   压缩包用户：data 本来就在压缩包目录里，直接用（项目内 data/）；
 //   安装版用户：安装目录/exe 旁边的 data/。选压缩包目录当安装目录时
-//   天然接管里面的 data/（config、记忆、聊天记录、telemetry id 全保留），零迁移零 bug。
+//   天然接管里面的 data/（config、记忆和聊天记录全保留），零迁移零 bug。
 // NSIS 覆盖安装只替换它自己装的文件，运行时生成的 data/ 不在清单里 → 升级不丢数据。
 // 兼容兜底：外置 %APPDATA% 时期（2026-09-06 短命版本）的数据自动搬回安装目录。
 function resolveDataDir() {
@@ -243,7 +213,7 @@ function createWindow(port) {
     if (level >= 2) console.log(`[renderer] ${message} (${sourceId}:${line})`);
   });
   mainWindow.loadURL(`http://127.0.0.1:${port}/`).catch((error) => console.error('[window] loadURL 失败:', error));
-  // 外部链接（金句墙/意见墙/上传成功提示里的网址等）一律交给系统默认浏览器，不在应用内弹新窗口
+  // 外部链接交给系统默认浏览器。
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
     return { action: 'deny' };
@@ -274,26 +244,6 @@ app.whenReady().then(async () => {
   try {
     // 应用只访问本机回环地址：强制直连，防止系统代理（Clash/加速器等）劫持 127.0.0.1 导致白/黑屏
     await session.defaultSession.setProxy({ mode: 'direct' });
-    // ── 验证码域重定向（2026-09-26）──
-    // 部分用户机器上 Chromium 网络栈访问 *.alicdn.com / *.aliyuncs.com 被本机
-    // 安全软件按进程+域名压制（同机 Node 层与系统 curl 均正常），而 kondius.cn 可达。
-    // 在 session 层把这两族域的请求重定向到 kondius.cn 的白名单反代：
-    //   /qq-agent/captcha-sdk/...  （SDK 主脚本）
-    //   /qq-agent/captcha-api/...  （SDK 接口，nginx 按域名后缀转发到真实域）
-    // webRequest 覆盖主文档/iframe/worker/XHR 的所有请求形态，比 Service Worker 可靠。
-    // 只匹配这两族域名后缀（正则收尾锚定），其余请求一律放行。
-    captchaInterceptorActive = true;
-    session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
-      try {
-        const m = /^https:\/\/([a-zA-Z0-9.-]+\.(?:aliyuncs|alicdn)\.com)(\/.*)$/.exec(details.url);
-        if (m) {
-          return callback({
-            redirectURL: `https://kondius.cn/qq-agent/captcha-api/${m[1]}${m[2]}`
-          });
-        }
-      } catch { /* 解析异常按放行处理 */ }
-      callback({});
-    });
     bootDiag('setProxy 完成');
     console.log('[window] 代理模式：direct（绕过系统代理）');
     const { createApp } = await import('../src/app.js');

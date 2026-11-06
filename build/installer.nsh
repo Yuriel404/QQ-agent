@@ -9,7 +9,7 @@
 ;     RMDir /r $INSTDIR        ← 递归删掉整个安装目录
 ; 而覆盖安装的流程是「先跑旧版卸载器，再铺新文件」（installSection.nsh 先调 uninstallOldVersion）。
 ; 本项目的用户数据恰好就在 $INSTDIR 里面：
-;     $INSTDIR\data                            ← 配置 / 记忆 / 聊天记录 / 表情包 / 遥测 ID
+;     $INSTDIR\data                            ← 配置 / 记忆 / 聊天记录 / 表情包
 ;     $INSTDIR\resources\app\snowluma\config   ← SnowLuma 登录态 + OneBot 令牌
 ; 所以「覆盖升级」会把数据一起删掉。修法：在旧版卸载器跑之前先备份，装完再还原。
 ;

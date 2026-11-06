@@ -39,7 +39,6 @@ function renderChatList() {
 
 async function selectChat(key) {
   state.currentChatKey = key;
-  if (state.quoteMode) state.quoteSelected = new Set();   // 金句按单段对话收录，换会话清空勾选
   renderChatList();
   $('#chat-detail').innerHTML = '<div class="empty-hint">加载中…</div>';
   await loadChatMessages(key);
@@ -260,18 +259,6 @@ function renderChatMessages() {
   // 滚动加载只挂一次（attachScrollLoader 内部有防重复）
   // 防御：02 模块若加载失败，这里不要把整个存档详情打成「加载失败」
   try { if (typeof initChatScrollLoader === 'function') initChatScrollLoader(); } catch (_) { /* 滚动加载缺失不影响看消息 */ }
-  // 金句勾选：事件委托挂在容器上（tbody 会被轮询重建，委托不受影响的）。
-  // 防重复：renderChatMessages 每次切会话都会跑，容器只绑一次。
-  if (!detail.__quoteBound) {
-    detail.__quoteBound = true;
-    detail.addEventListener('change', (e) => {
-      const cb = e.target.closest?.('.quote-check');
-      if (!cb) return;
-      const mid = Number(cb.dataset.mid);
-      if (cb.checked) state.quoteSelected.add(mid); else state.quoteSelected.delete(mid);
-      cb.closest('tr')?.classList.toggle('quote-selected', cb.checked);
-    });
-  }
 }
 
 /**
@@ -299,19 +286,12 @@ function chatMessagesNewestFirst() {
 
 /** 单行消息 HTML（全量渲染与滚动追加共用同一个模板，保证两处长得一样）。 */
 function chatMsgRowHtml(m) {
-  // 金句勾选模式：行首加勾选框；选中态存 state.quoteSelected（按消息 id），
-  // 轮询重建行时勾选状态不丢
-  const q = state.quoteMode
-    ? `<td class="q-check"><input type="checkbox" class="quote-check" data-mid="${m.id}" ${state.quoteSelected.has(m.id) ? 'checked' : ''} /></td>`
-    : '';
-  // 删除勾选模式：行首加删除勾选框（与金句勾选互斥）
   const d = state.chatDeleteMode
     ? `<td class="q-check"><input type="checkbox" class="chat-del-check" data-mid="${m.id}" ${state.chatDeleteSelected.has(m.id) ? 'checked' : ''} /></td>`
     : '';
-  const sel = state.quoteMode && state.quoteSelected.has(m.id) ? ' quote-selected' : '';
   const dsel = state.chatDeleteMode && state.chatDeleteSelected.has(m.id) ? ' chat-del-selected' : '';
   return `
-    <tr class="${m.read ? '' : 'unread'}${sel}${dsel}" data-midrow="${m.id}">${q}${d}
+    <tr class="${m.read ? '' : 'unread'}${dsel}" data-midrow="${m.id}">${d}
       <td class="t">${fmtTime(m.ts)}</td>
       <td class="w ${m.self ? 'self' : ''}">${m.self ? '我' : esc(m.senderName)}</td>
       <td class="text">${esc(m.text)}${m.read ? '' : ' <span class="unread-pill">未读</span>'}</td>

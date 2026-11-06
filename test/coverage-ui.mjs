@@ -148,15 +148,11 @@ await c.check('index.html 的本地资源引用全部存在', () => {
 await c.check('landing.html 的本地资源引用全部存在（曾经引用过不存在的 /assets/theme.*）', () => {
   // ⚠️ landing.html 是**部署到官网**的落地页：/assets/theme.* 是站点级主题包，
   // 存在于服务器上而不在本仓库 ui/ 下（本地直开由 .no-theme 兜底，见页面注释）。
-  // 站级资源只校验路径前缀；与页面同目录的相对文件（如群二维码）必须本地存在。
+  // 站级资源只校验路径前缀；与页面同目录的相对资源必须本地存在。
+  assert.ok(landing.includes('/assets/theme.js') && landing.includes('/assets/theme.css'), '产品页应引用站点主题');
+  assert.ok(landing.includes('no-theme'), '本地预览应有备用样式');
   for (const u of localRefs(landing)) {
     if (/^\/(assets|vendor)\//.test(u)) continue;   // 站级资源，服务器侧存在
-    // 群二维码图片：随 ui/ 一起分发（设置页彩蛋与 landing 都引用它）。
-    if (u === 'group-qrcode.jpg') {
-      const p = path.join(ROOT, 'ui', u);
-      assert.ok(fs.existsSync(p), `landing.html 引用的群二维码不存在：${u}`);
-      continue;
-    }
     if (u.startsWith('/')) {
       assert.fail(`landing.html 不应引用其它本地根路径资源：${u}`);
     } else {
@@ -227,9 +223,8 @@ await c.check('landing.html 的下载链接带版本号（官网同目录部署�
   // 2026-09-07 起下载链接刻意改为"带版本号的相对路径"（commit e359c29）：
   // 安装包与落地页同目录部署在官网，相对路径在部署环境有效；
   // "必须绝对地址"的旧断言是按本地服务口径写的，与部署事实相反。
-  const m = /href="([^"]*qq-agent-v[\d.]+-setup\.exe)"/.exec(landing);
-  assert.ok(m, '找不到安装包下载链接');
-  assert.ok(/^[\w.-]+\.exe$/.test(m[1]), `应为同目录相对文件名（带版本号），实际：${m[1]}`);
+  const { artifactName } = JSON.parse(read('package.json')).build;
+  assert.ok(landing.includes(`href="${artifactName}"`), `下载链接应指向构建产物 ${artifactName}`);
 });
 
 // ── 3. vendor 镜像一致性 ─────────────────────────────────────────────────

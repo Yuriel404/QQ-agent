@@ -48,14 +48,6 @@ html.dark .nav { background: rgba(16,30,55,.7); }
 .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 60px; }
 .brand { font-weight: 700; font-size: 18px; }
 .brand span { color: var(--accent); }
-/* 顶栏右侧按钮组（意见箱 / 雷霆语录 / 大肥鱼群 / 作者的博客？！） */
-.nav-btns { display: flex; align-items: center; gap: 10px; }
-.nav-pill { display: inline-flex; align-items: center; padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; text-decoration: none; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; font-family: inherit; transition: border-color .15s, transform .15s; white-space: nowrap; }
-.nav-pill:hover { border-color: var(--accent); transform: translateY(-1px); }
-.nav-pill.p-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.nav-pill.p-accent { background: var(--warn); border-color: var(--warn); color: #fff; }
-.nav-pill.p-sm { font-size: 12px; padding: 5px 12px; font-weight: 500; }
-
 /* Hero */
 .hero { padding: 90px 0 70px; text-align: center; position: relative; }
 .hero-badge { display: inline-block; padding: 5px 14px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; color: var(--muted); background: var(--panel); margin-bottom: 26px; }
@@ -67,9 +59,6 @@ html.dark .nav { background: rgba(16,30,55,.7); }
 .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 30px rgba(51,133,240,.45); }
 .btn-ghost { border: 1px solid var(--line); color: var(--text); background: var(--panel); }
 .btn-ghost:hover { border-color: var(--accent); }
-.btn-accent { background: var(--warn); color: #fff; box-shadow: 0 6px 24px rgba(240,147,43,.3); }
-.btn-accent:hover { transform: translateY(-2px); }
-.btn-sm { padding: 9px 18px; font-size: 13px; }   /* 「作者的博客？！」专用：小一号不抢戏 */
 .hero-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 14px; }
 .hero-note { margin-top: 14px; font-size: 13px; color: var(--muted); }
 
@@ -107,43 +96,8 @@ section { padding: 76px 0; }
 footer { border-top: 1px solid var(--line); padding: 30px 0 44px; color: var(--muted); font-size: 13px; text-align: center; }
 footer a { color: var(--muted); }
 
-/* 实时总览统计条 */
-.stats-band { display: flex; gap: 34px; justify-content: center; flex-wrap: wrap; padding: 22px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel); backdrop-filter: blur(8px); }
-.stats-band .stat { text-align: center; }
-.stats-band .stat b { display: block; font-size: 22px; color: var(--accent); font-variant-numeric: tabular-nums; }
-.stats-band .stat span { font-size: 12px; color: var(--muted); }
-
-/* 工具调用明细：与程序内「调用明细」同款 —— 分类分组 + 图标 + 中文名 + 占比条 */
-.tb-wrap { max-width: 720px; margin: 18px auto 0; padding: 0 24px 8px; }
-.tb-cat { margin-bottom: 14px; }
-.tb-cat-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); padding: 4px 2px; }
-.tb-cat-sum { font-variant-numeric: tabular-nums; }
-.tb-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); margin-top: 6px; }
-.tb-icon { flex: none; width: 22px; text-align: center; }
-.tb-name { flex: none; width: 84px; font-size: 13px; }
-/* 方法名定宽 + 省略：各行占比条的轨道因此完全等长、左对齐 */
-.tb-code { flex: none; width: 168px; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tb-bar { flex: 1; height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
-.tb-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 3px; }
-.tb-n { flex: none; min-width: 40px; text-align: right; font-size: 13px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
-
-/* 群二维码弹层：点任意位置关闭 */
-.qr-overlay {
-  position: fixed; inset: 0; z-index: 9999;
-  background: rgba(15,30,55,.55); backdrop-filter: blur(6px);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer;
-}
-.qr-overlay img {
-  max-width: min(80vw, 480px); max-height: 80vh;
-  border-radius: 14px; box-shadow: 0 24px 70px rgba(20,50,100,.35);
-}
-
 @media (max-width: 640px) {
   .hero h1 { font-size: 32px; }
-  .nav-pill { padding: 4px 9px; font-size: 12px; }
-  .tb-name { width: 64px; }
-  .tb-code { display: none; }
 }
 
 /* 本地预览兜底：/assets/theme.css 不存在时（直开文件、非站点环境），
@@ -156,14 +110,6 @@ html.no-theme.dark body { background: #0d1726; }
 
 <nav class="nav"><div class="wrap nav-inner">
   <div class="brand">QQ <span>Agent</span></div>
-  <div class="nav-btns">
-    <a class="nav-pill p-primary" href="/qq-agent/comments" target="_blank" rel="noopener">意见箱</a>
-    <a class="nav-pill p-primary" href="/qq-agent/holyshits" target="_blank" rel="noopener">雷霆语录</a>
-    <a class="nav-pill p-primary" href="/qq-agent/skill-market/">Skill 市场</a>
-    <a class="nav-pill p-accent" href="/qq-agent/persona-plaza/">人设广场</a>
-    <button class="nav-pill p-accent" type="button" id="groupQrBtn">官方交流群</button>
-    <a class="nav-pill p-sm" href="https://kondius.cn" target="_blank" rel="noopener">作者的博客？！</a>
-  </div>
 </div></nav>
 
 <header class="hero"><div class="wrap">
@@ -177,16 +123,6 @@ html.no-theme.dark body { background: #0d1726; }
   <div class="hero-note">安装即用 · 自带 Electron 环境 · 约 80MB</div>
 </div></header>
 
-<!-- 实时总览：数据来自匿名用量遥测（只有计数，不含任何身份信息），拉不到就整条隐藏 -->
-<div class="stats-band" id="stats-band" style="display:none">
-  <div class="stat"><b id="st-users">-</b><span>位用户正在使用</span></div>
-  <div class="stat"><b id="st-calls">-</b><span>累计调用次数</span></div>
-  <div class="stat"><b id="st-input">-</b><span>累计输入 token</span></div>
-  <div class="stat"><b id="st-output">-</b><span>累计输出 token</span></div>
-</div>
-<!-- 工具调用明细：与程序内「调用明细」同款排布 -->
-<div class="tb-wrap" id="tools-detail" style="display:none"></div>
-
 <section><div class="wrap">
   <h2 class="section-title">功能一览</h2>
   <p class="section-sub">先跑起来，再按需打开。</p>
@@ -197,7 +133,7 @@ html.no-theme.dark body { background: #0d1726; }
     <div class="card"><span class="tag">人设</span><h3>人设系统</h3><p>内置「小鲸鱼」人设开箱即用，也支持多套自定义人设一键切换，群友改不动。</p></div>
     <div class="card"><span class="tag">工具</span><h3>联网搜索与看图</h3><p>可接多家搜索提供方，支持图片输入；表情包、CQ 码艾特、撤回等群玩法齐备。</p></div>
     <div class="card"><span class="tag">数据</span><h3>用量与成本</h3><p>按天 / 按会话 / 按模型三个维度看账单，缓存命中率一目了然，支持自定义价格表。</p></div>
-    <div class="card"><span class="tag">社区</span><h3>屏蔽名单与一键导出</h3><p>被屏蔽群员的消息不存档、不触发、不进提示词；聊天记录、金句、意见反馈都能导出或一键上传分享。</p></div>
+    <div class="card"><span class="tag">管理</span><h3>本地屏蔽名单</h3><p>可按群屏蔽联系人，或在所有群聊和私聊中屏蔽指定 QQ 号。</p></div>
     <div class="card"><span class="tag">部署</span><h3>本地直连</h3><p>不用买服务器、不用配反向代理，装在你自己电脑上就能跑；开机自启、托盘常驻。</p></div>
   </div>
 </div></section>
@@ -232,94 +168,6 @@ html.no-theme.dark body { background: #0d1726; }
   QQ Agent · 由 Kondius 用 ❤️ 维护 · <a href="https://github.com/K0nd1us/QQ-agent" target="_blank" rel="noopener">GitHub</a>
 </div></footer>
 
-<script>
-// ── 大肥鱼群二维码：点任意位置关闭 ──
-(function () {
-  document.getElementById('groupQrBtn').addEventListener('click', function () {
-    const ov = document.createElement('div');
-    ov.className = 'qr-overlay';
-    ov.innerHTML = '<img src="group-qrcode.jpg" alt="大肥鱼群二维码" />';
-    ov.addEventListener('click', function () { ov.remove(); });
-    document.body.appendChild(ov);
-  });
-})();
-</script>
-
-<script>
-// 实时总览：匿名遥测聚合。token 用 万/亿 缩写，失败或没人用时整条隐藏。
-// 工具元数据与程序内 ui/app.js 的 TOOL_META 保持一致（图标/中文名/分类）。
-const TOOL_META = {
-  send_message:      { name: '发消息',     cat: '发言',   icon: '💬' },
-  send_sticker:      { name: '发表情包',   cat: '发言',   icon: '🎴' },
-  send_poke:         { name: '戳一戳',     cat: '发言',   icon: '👆' },
-  get_recent_messages: { name: '翻聊天记录', cat: '查看', icon: '📜' },
-  get_message_detail:  { name: '看消息详情', cat: '查看', icon: '🔍' },
-  get_message_images:  { name: '看图片',     cat: '查看', icon: '🖼️' },
-  get_active_members:  { name: '看活跃群友', cat: '查看', icon: '👥' },
-  list_stickers:     { name: '列表情库',   cat: '表情',   icon: '📚' },
-  get_sticker_image: { name: '看表情图',   cat: '表情',   icon: '🖼️' },
-  collect_sticker:   { name: '收藏表情',   cat: '表情',   icon: '⭐' },
-  sticker_note:      { name: '备注表情',   cat: '表情',   icon: '📝' },
-  memory_append:     { name: '记一条',     cat: '记忆',   icon: '🧠' },
-  memory_query:      { name: '查记忆',     cat: '记忆',   icon: '🧠' },
-  memory_remove:     { name: '删记忆',     cat: '记忆',   icon: '🧹' },
-  web_search:        { name: '联网搜索',   cat: '联网',   icon: '🌐' },
-  web_fetch:         { name: '抓网页',     cat: '联网',   icon: '🔗' },
-  report_feedback:   { name: '汇报反馈',   cat: '其他',   icon: '📣' },
-  finish:            { name: '结束本次',   cat: '其他',   icon: '🏁' }
-};
-const TOOL_CAT_ORDER = ['发言', '查看', '表情', '记忆', '联网', '其他'];
-(function () {
-  function fmt(n) {
-    if (n >= 1e8) return (n / 1e8).toFixed(1) + ' 亿';
-    if (n >= 1e4) return (n / 1e4).toFixed(1) + ' 万';
-    return String(n);
-  }
-  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
-  fetch('https://kondius.cn/qq-agent/api/telemetry/summary')
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (!d.ok || !d.users) return;
-      document.getElementById('st-users').textContent = d.users;
-      document.getElementById('st-calls').textContent = fmt(d.calls);
-      document.getElementById('st-input').textContent = fmt(d.inputTokens);
-      document.getElementById('st-output').textContent = fmt(d.outputTokens);
-      document.getElementById('stats-band').style.display = 'flex';
-
-      // 工具调用明细：分类分组渲染，与程序内同款
-      const entries = Object.entries(d.tools || {}).filter(function (kv) { return kv[1] > 0; });
-      if (!entries.length) return;
-      const total = entries.reduce(function (a, kv) { return a + kv[1]; }, 0);
-      const max = Math.max.apply(null, entries.map(function (kv) { return kv[1]; }));
-      const byCat = new Map();
-      for (const kv of entries) {
-        const key = kv[0], n = kv[1];
-        const meta = TOOL_META[key] || { name: key, cat: '其他', icon: '🔧' };
-        if (!byCat.has(meta.cat)) byCat.set(meta.cat, []);
-        byCat.get(meta.cat).push(Object.assign({ key: key, n: n }, meta));
-      }
-      const cats = TOOL_CAT_ORDER.filter(function (c) { return byCat.has(c); });
-      for (const c of byCat.keys()) if (!cats.includes(c)) cats.push(c);
-      document.getElementById('tools-detail').innerHTML = cats.map(function (cat) {
-        const items = byCat.get(cat).sort(function (a, b) { return b.n - a.n; });
-        const catTotal = items.reduce(function (a, x) { return a + x.n; }, 0);
-        return '<div class="tb-cat">' +
-          '<div class="tb-cat-head"><span>' + esc(cat) + '</span>' +
-          '<span class="tb-cat-sum">' + catTotal + ' 次 · ' + (catTotal / total * 100).toFixed(0) + '%</span></div>' +
-          items.map(function (it) {
-            return '<div class="tb-row">' +
-              '<span class="tb-icon">' + it.icon + '</span>' +
-              '<span class="tb-name">' + esc(it.name) + '</span>' +
-              '<span class="tb-code">' + esc(it.key) + '</span>' +
-              '<span class="tb-bar"><i style="width:' + (it.n / max * 100).toFixed(1) + '%"></i></span>' +
-              '<span class="tb-n">' + it.n + '</span></div>';
-          }).join('') + '</div>';
-      }).join('');
-      document.getElementById('tools-detail').style.display = 'block';
-    })
-    .catch(function () {});
-})();
-</script>
 <script>
 // 主题包未加载（本地预览）时打标记，启用自带兜底背景
 addEventListener('load', function () {

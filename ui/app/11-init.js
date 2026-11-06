@@ -16,6 +16,12 @@ $$('.tab').forEach((tab) => {
     applyTheme(getThemePref());
     $('#theme-btn')?.addEventListener('click', cycleTheme);
 
+    // 升级前打开过验证码的浏览器可能仍由旧网络代理控制，注销后下次导航即解除。
+    const workers = window.navigator?.serviceWorker;
+    if (workers?.controller && workers.controller.scriptURL === window.location.origin + '/captcha-sw.js') {
+      workers.getRegistration().then((reg) => reg?.unregister()).catch(() => {});
+    }
+
     // 启动 loading：先等 HTTP 服务可用（页面可能先于服务打开）
     setLoadingStatus('正在启动 QQ Agent 服务…');
     await bootLoop();

@@ -14,7 +14,7 @@
 > | **LLM 型** —— 注册工具，模型决定何时用 | `skills/` | **[skill-development.md](./skill-development.md)** |
 > | **确定性型** —— 提供能力/钩子，满足条件必然触发 | `plugins/` | **[plugin-development.md](./plugin-development.md)** |
 >
-> 本文是**配套参考**，不是入口文档。两型的完整开发流程（目录、文件、热重载、上架、自检、排查）
+> 本文是**配套参考**，不是入口文档。两型的完整开发流程（目录、文件、热重载、自检、排查）
 > 都在上面那两份里。
 
 
@@ -260,24 +260,10 @@ export const providers = {
 `prompt.sections[].priority` 会被强制压到 99 以内 —— 核心安全规则恒为 100+，
 Skill **不可能**覆盖安全约束、工具协议。片段一律排在核心提示词之后。
 
-### 打包上传到 Skill 市场
-
-zip 里带上 `skill.json` 与源码即可（目录层级不限，解压时保留结构）：
-
-```
-my-skill.zip
-└── my-skill/
-    ├── skill.json
-    ├── index.js
-    └── lib/helper.js
-```
-
-服务端校验：仅 zip、≤ 8MB、解压后 ≤ 32MB、≤ 100 个文件、禁 `exe/dll/bat/cmd/ps1/vbs/sh`、
-禁绝对路径与 `..`（含 `\` 变体）；`id` 必须合法且不与他人重名（重名返回 409）。
+### 清单分类
 
 **`category` 必须用加载器认可的值**：`model` / `message` / `knowledge` / `media` / `utility`。
-写别的会被加载器静默降级成 `utility` 并记一条 problem；市场侧也按同一套映射收敛
-（旧插件的 `system` / `web` 等会归到 `utility`）。
+其他值会被加载器降级成 `utility` 并记一条 problem。
 
 > `plugins/<id>/plugin.json` 同样支持：`register(api)` 等价于 `setup(api)`，
 > 但 `plugin.json` 里的 `tools[]` 只是**说明性元数据**，工具必须在入口里 `registerTool` 注册，
@@ -327,7 +313,7 @@ export const hooks = {
 需要网络时在清单加 `"permissions": ["web_fetch"]`，才能用 `api.fetch`；
 软依赖用 `api.capability('某能力')`（缺了自动降级），硬依赖才写进 `requires`。
 
-## 开发者全流程（从零到上架）
+## 开发者全流程（从零到自测）
 
 | 阶段 | 做什么 | 怎么验证 |
 |---|---|---|
@@ -337,7 +323,6 @@ export const hooks = {
 | ④ 看状态 | 控制台 → 「技能」页（LLM 型）/「插件」页（确定性型）；再开模型目录页看工具 | 状态要显示**生效中**；工具 `开发工具` 要可用 |
 | ⑤ 查原因 | `GET /api/skills`、`GET /api/tools/availability` | 不可用时给出 `code` + `reason`，不用猜 |
 | ⑥ 自测 | `npm run test:skill`；想加断言就照 `test/skill-test.mjs` 用 `loadPlugins({roots})` 指到临时目录 | 36 项全绿 |
-| ⑦ 上架 | 压 zip（含清单+源码）→ Skill 市场「上传 Skill ZIP」 | 列表出现、能下载解压；重名会 409 |
 
 **调试要点**：
 

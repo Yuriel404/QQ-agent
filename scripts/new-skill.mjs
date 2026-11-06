@@ -240,4 +240,3 @@ console.log('   1. 在 index.js 的 execute 里写实现');
 console.log('   2. QQ_AGENT_DEV=1 npm run server   （保存文件即热重载）');
 console.log('   3. 控制台 → 技能页确认「生效中」，模型目录页确认工具可用');
 console.log('   4. npm run test:skill');
-console.log('   5. 发布：压缩该目录为 zip（含清单与源码）→ Skill 市场「上传 Skill ZIP」');

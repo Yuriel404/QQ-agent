@@ -785,7 +785,6 @@ function switchTab(name) {
     setTimeout(clear, 220);
   }
   state.tab = name;
-  if (state.quoteMode && name !== 'chats') exitQuoteMode();   // 离开存档页自动退出金句勾选
   if (name === 'sessions') loadSessions();
   if (name === 'chats') loadChats();
   // 群名补底：设置页（人设分群按钮/活跃设置分群下拉）用 chatNameOf 取名字，

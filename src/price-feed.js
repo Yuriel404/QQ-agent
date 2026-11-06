@@ -21,9 +21,8 @@
 //           peak/image/note/src 可选，与内置表条目同构。
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, FIXED_PRICE_REMOTE_URL } from './config.js';
 import { setRemotePrices } from './model-prices.js';
-import { FIXED_PRICE_FEED_URL } from './community.js';
 
 const CACHE_FILE = path.join(DATA_DIR, 'price-feed-cache.json');
 const FETCH_TIMEOUT_MS = 10000;
@@ -136,12 +135,11 @@ function writeDiskCache(url, prices) {
 
 /**
  * 立即拉取一次远程价格表。
- * @param {string} url
  * @returns {Promise<object>} 最新状态
  */
-export async function refreshPriceFeed(_url) {
+export async function refreshPriceFeed() {
   // 生产地址固定；测试可通过显式 API 注入本地 fixture，不暴露给 UI/配置。
-  const url = testOverrideUrl || FIXED_PRICE_FEED_URL;
+  const url = testOverrideUrl || FIXED_PRICE_REMOTE_URL;
   status.url = url;
   status.fetchedAt = Date.now();
   if (!url) {
@@ -176,9 +174,9 @@ export async function refreshPriceFeed(_url) {
  *    refreshPriceFeed 内部已全 catch，这里是第二道保险 ——
  *    这个模块绝不允许以任何方式影响主程序（未捕获的 rejection 也算）。
  */
-export function initPriceFeed(_url) {
+export function initPriceFeed() {
   // 价格表地址固定为官网公开地址；内部测试 override 不由 UI/配置传入。
-  const url = testOverrideUrl || FIXED_PRICE_FEED_URL;
+  const url = testOverrideUrl || FIXED_PRICE_REMOTE_URL;
   if (timer) { clearInterval(timer); timer = null; }
   if (!url) {
     status.url = '';
@@ -189,19 +187,19 @@ export function initPriceFeed(_url) {
   status.url = url;
   status.enabled = true;
   applyDiskCache(url);            // 先用缓存顶上，拉到新的再覆盖
-  refreshPriceFeed(url).catch(() => {});   // 启动即拉（异步，不阻塞启动）
+  refreshPriceFeed().catch(() => {});   // 启动即拉（异步，不阻塞启动）
   timer = setInterval(() => {
     const age = Date.now() - (status.fetchedAt || 0);
     if (status.ok && age < SUCCESS_INTERVAL_MS) return;
     if (!status.ok && age < FAILURE_RETRY_MS) return;
-    refreshPriceFeed(status.url).catch(() => {});
+    refreshPriceFeed().catch(() => {});
   }, TICK_MS);
   timer.unref?.();   // 别让定时器拖着进程不退出（测试/脚本场景）
 }
 
 /** 当前状态（给 /api/model-prices 与设置页展示）。 */
 export function priceFeedStatus() {
-  return { ...status, url: FIXED_PRICE_FEED_URL };
+  return { ...status, url: FIXED_PRICE_REMOTE_URL };
 }
 
 // 测试专用：生产调用方永远不应设置此值；不提供给 HTTP/UI。

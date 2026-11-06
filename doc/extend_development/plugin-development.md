@@ -4,7 +4,7 @@
 > **满足条件就一定执行，不经过 LLM** —— 模型想忽略也忽略不掉。
 > 另一类是 **LLM 型**（`skills/`，注册工具、由模型决定何时用），见
 > [skill-development.md](./skill-development.md)。
-> 两者的共同机制（清单字段、生命周期、能力系统、热重载、上架）见
+> 两者的共同机制（清单字段、生命周期、能力系统、热重载）见
 > [skill-reference.md](./skill-reference.md)。
 
 ---
@@ -407,9 +407,7 @@ try {
 
 ---
 
-## 9. 热重载与上架
-
-### 热重载
+## 9. 热重载
 
 **默认开启**：目录放进 `plugins/` 就生效，不需要重启。
 
@@ -417,22 +415,6 @@ try {
 - 删除目录 → 下一次重扫把它卸掉
 - 配置项 `config.extensions.hotReload`（默认 `true`）；`QQ_AGENT_DEV=1` 可强制打开
 - ⚠️ 安全含义：等价于"任意落地的 JS 会被执行"。共享机器/固定版本建议关掉
-
-### 上架
-
-打包 zip（包内**直接**是 `plugin.json` + `index.js`）→ `POST /api/community/skills/upload`（multipart，字段 `file`）。
-
-| 限制 | 值 |
-|---|---|
-| 压缩包大小 | ≤ 8MB |
-| 解压后总大小 | ≤ 32MB |
-| 文件数 | ≤ 100 |
-| 必须包含 | `plugin.json` 或 `skill.json` |
-| 清单编码 | 合法 UTF-8 JSON，**不能带 BOM** |
-| 禁止 | 绝对路径 / `..` / `.exe .dll .bat .cmd .ps1 .vbs .sh` |
-| `id` | 合法且未被占用（重复 → 409） |
-
-打包前清掉：`node_modules/`、`data/`、密钥文件、`entry.json`。
 
 ---
 
@@ -593,7 +575,7 @@ export const hooks = {
 交给 AI 时的附加文档选择见文首的「📎」一节。
 
 - [skill-development.md](./skill-development.md) —— LLM 型技能开发（注册工具）
-- [skill-reference.md](./skill-reference.md) —— 共同机制完整参考（清单、生命周期、能力系统、ctx 全量字段、硬约束清单、上架）
+- [skill-reference.md](./skill-reference.md) —— 共同机制完整参考（清单、生命周期、能力系统、ctx 全量字段、硬约束清单）
 - [snowluma-capabilities.md](./snowluma-capabilities.md) —— 协议端 73 个接口的逐条参数表
 - [skill-system.md](./skill-system.md) —— 架构总览
 - [video-modes.md](./video-modes.md) —— 视频理解两条路的分工与配置（提供 video.frames 类能力前先读）

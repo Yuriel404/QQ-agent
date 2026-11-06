@@ -306,7 +306,6 @@ a, button, input, textarea, select, summary,
   overflow-x: auto; scrollbar-width: none; position: relative;
 }
 #tabs::-webkit-scrollbar { display: none; }
-.nav-spacer { flex: 1; }
 .tab {
   position: relative; height: 100%; padding: 0 13px; flex: 0 0 auto;
   font-size: 13px; font-weight: 600; color: var(--tx3);
@@ -319,20 +318,6 @@ a, button, input, textarea, select, summary,
   color: var(--tx);
   box-shadow: inset 0 -2px 0 var(--ac);
 }
-.nav-btn {
-  height: 26px; padding: 0 11px; border-radius: var(--r-full); flex: 0 0 auto;
-  font-size: 12px; font-weight: 600; color: var(--tx2);
-  border: 1px solid var(--bd); background: var(--bg2);
-  white-space: nowrap;
-}
-.nav-btn:hover { color: var(--tx); border-color: var(--bd2); }
-.nav-btn.nav-btn-market, .nav-btn.nav-btn-primary { color: var(--ac); border-color: var(--ac-line); }
-.nav-btn.nav-btn-persona { color: var(--warn); border-color: var(--warn-line); }
-.nav-btn.nav-btn-hot {
-  background: var(--ac); border-color: var(--ac); color: #fff;
-}
-.nav-btn.nav-btn-hot:hover { filter: brightness(1.08); color: #fff; }
-
 /* 主布局：必须吃满剩余高度并禁止溢出，
    否则 .view / 列表 / 详情的高度链断裂 —— 两栏都被锁成单屏无法滚动 */
 #layout {
@@ -644,7 +629,6 @@ span.unread {
 .archive-table .w { white-space: nowrap; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
 .archive-table .w.self { color: var(--ac); }
 .archive-table .text { word-break: break-word; white-space: pre-wrap; color: var(--tx); }
-tr.quote-selected td, tr.chat-del-selected td { background: var(--ac-soft); box-shadow: inset 2px 0 0 var(--ac); }
 tr.chat-del-selected td { background: var(--err-soft); box-shadow: inset 2px 0 0 var(--err); }
 .chat-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
 #test-send-text {
@@ -937,12 +921,12 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
   display: flex; align-items: center; gap: 8px;
   flex-shrink: 0; margin-left: auto;
 }
-.mcard-gear, .mcard-upload {
+.mcard-gear {
   width: 36px; height: 36px; border-radius: var(--r-sm);
   border: 1px solid var(--bd2); background: var(--bg2); color: var(--tx2);
   display: grid; place-items: center; font-size: 16px;
 }
-.mcard-gear:hover, .mcard-upload:hover { background: var(--ac); color: #fff; border-color: var(--ac); }
+.mcard-gear:hover { background: var(--ac); color: #fff; border-color: var(--ac); }
 
 /* ══ 8. 设置页 ══ */
 .settings-sidebar {
@@ -972,10 +956,6 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
 .settings-menu-item.active, .smi.on {
   background: var(--ac-soft); color: var(--ac); font-weight: 650;
 }
-.settings-menu-item.egg-hot {
-  background: var(--ac); color: #fff; font-weight: 700; text-align: center; margin-top: 10px;
-}
-.settings-menu-item.egg-hot:hover { filter: brightness(1.08); color: #fff; }
 .update-dot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
   background: var(--err); margin-left: 6px;
@@ -1256,7 +1236,7 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
 .bl-global-toggle.on { background: var(--err); color: #fff; border-color: var(--err); }
 
 /* 弹窗 */
-.modal-overlay, .model-modal-overlay, .qrcode-egg-overlay {
+.modal-overlay, .model-modal-overlay {
   position: fixed; inset: 0; z-index: 200; background: var(--overlay);
   display: flex; align-items: center; justify-content: center; padding: 24px;
   animation: fadeIn var(--dur-base) var(--ease-in-out);
@@ -1412,54 +1392,6 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
   font-family: var(--font-mono); font-size: 11px;
 }
 
-/* ── 「＋ 添加」链路的弹窗（添加入口 / 口令安装 / 自建引导）────────────
-   这几个弹窗此前只有结构没有样式：大按钮是裸文本、悬停文案不切换、
-   口令行没有状态反馈、提示词代码块是浏览器默认灰底（2026-09-26 补齐）。 */
-.addmod-stack { display: flex; flex-direction: column; gap: 10px; }
-.addmod-big {
-  display: grid; place-items: center;
-  padding: 20px 16px; border-radius: var(--r-md);
-  background: var(--bg2); border: 1px solid var(--bd2); color: var(--tx);
-  transition: border-color .16s ease, background-color .16s ease, transform .16s ease;
-}
-.addmod-big:hover { border-color: var(--ac-line); background: var(--ac-soft); transform: translateY(-1px); }
-.addmod-big:active { transform: translateY(0) scale(.995); }
-/* 两段文案叠在同一格里做交叉淡换（'看看市场' ↔ '捞点好货'），不换行不跳高 */
-.addmod-big > span { grid-area: 1 / 1; transition: opacity .14s ease; }
-.addmod-label { font-size: 14px; font-weight: 650; line-height: 1.4; }
-.addmod-hover-label { opacity: 0; font-size: 12px; font-weight: 600; color: var(--ac); }
-.addmod-big:hover .addmod-label { opacity: 0; }
-.addmod-big:hover .addmod-hover-label { opacity: 1; }
-.addmod-diy { background: transparent; border-style: dashed; }
-
-/* 口令安装：逐行口令，校验状态（checking/ok/bad）直接长在行上 */
-#ic-rows { display: flex; flex-direction: column; gap: 8px; }
-.ic-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 9px; border-radius: var(--r-sm);
-  background: var(--bg2); border: 1px solid var(--bd);
-  transition: border-color .16s ease, background-color .16s ease, opacity .16s ease;
-}
-.ic-row.checking { border-color: var(--ac-line); }
-.ic-row.ok { border-color: var(--ok-line); background: var(--ok-soft); }
-.ic-row.bad { border-color: var(--err-line); background: var(--err-soft); }
-.ic-row.dim { opacity: .72; }
-.ic-input {
-  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
-  color: var(--tx); font-family: var(--font-mono); font-size: 13px; letter-spacing: .05em;
-}
-.ic-input::placeholder { color: var(--tx3); letter-spacing: 0; }
-.ic-del {
-  flex: 0 0 auto; width: 26px; height: 26px; border-radius: var(--r-xs);
-  color: var(--tx3); font-size: 13px; transition: color .14s ease, background-color .14s ease;
-}
-.ic-del:hover { color: var(--err); background: var(--err-soft); }
-.ic-check { flex: 0 0 auto; }
-.ic-meta {
-  flex: 1; min-width: 0; font-size: 12px; color: var(--tx);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
 /* 自建引导：给 AI 工具的提示词代码块（复制源） */
 .guide-code {
   margin: 0; padding: 12px 14px;
@@ -1467,44 +1399,24 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
   font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6; color: var(--tx2);
 }
 
-/* 市场账号选择 / 文本链接 */
-.account-pick {
-  display: flex; align-items: center; gap: 10px; width: 100%;
-  padding: 9px 12px; margin-bottom: 6px; border-radius: var(--r-sm);
-  background: var(--bg2); border: 1px solid var(--bd); color: var(--tx2); font-size: 12.5px;
-  transition: border-color .14s ease, color .14s ease, background-color .14s ease;
-}
-.account-pick:hover { border-color: var(--ac-line); background: var(--hover); color: var(--tx); }
-.ap-name { font-weight: 650; font-size: 13px; color: var(--tx); }
-.link { color: var(--ac); cursor: pointer; text-decoration: none; }
-.link:hover { text-decoration: underline; }
-
 /* 应用内 alert 弹窗（showAppAlert）：替代原生 alert 的红色配色提示框 */
 .app-alert-text {
   font-size: 13px; line-height: 1.75; color: var(--tx);
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
-/* toast / 彩蛋 */
-.upload-toast {
+/* 版本更新提示 */
+.update-toast {
   position: fixed; right: 18px; bottom: 18px; z-index: 250;
   background: var(--bg1); border: 1px solid var(--bd); border-radius: var(--r-md);
   padding: 12px 14px; box-shadow: var(--raise-3); min-width: 260px;
   animation: slideInRight var(--dur-slow) var(--ease-out-quart);
 }
-.upload-toast.closing { animation: fadeOut var(--dur-base) var(--ease-in-out) forwards; }
-.upload-toast .ut-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.upload-toast .ut-title { font-weight: 650; font-size: 13.5px; }
-.upload-toast .ut-close { color: var(--tx3); }
-.upload-toast .ut-link { color: var(--ac); font-size: 12px; }
-.qrcode-egg-overlay img {
-  max-width: min(320px, 80vw); border-radius: var(--r-md); border: 1px solid var(--bd);
-  animation: popIn var(--dur-slow) var(--ease-spring);
-}
-.fb-imgs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
-.fb-img { position: relative; border: 1px solid var(--bd); border-radius: var(--r-sm); overflow: hidden; aspect-ratio: 1; }
-.fb-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
-
+.update-toast.closing { animation: fadeOut var(--dur-base) var(--ease-in-out) forwards; }
+.update-toast .ut-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.update-toast .ut-title { font-weight: 650; font-size: 13.5px; }
+.update-toast .ut-close { color: var(--tx3); }
+.update-toast .ut-link { color: var(--ac); font-size: 12px; }
 /* dirty 变动反馈 */
 .dirty-glow {
   background-image: linear-gradient(
@@ -1547,9 +1459,9 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
 @keyframes shimmer { 100% { transform: translateX(100%); } }
 @keyframes fadeOut { 0% { opacity: 1; } 100% { opacity: 0; } }
 
-.modal-overlay, .model-modal-overlay, .qrcode-egg-overlay { animation: fadeIn var(--dur-base) var(--ease-in-out); }
+.modal-overlay, .model-modal-overlay { animation: fadeIn var(--dur-base) var(--ease-in-out); }
 .model-modal { animation: popIn var(--dur-slow) var(--ease-spring); }
-.modal-overlay.closing, .model-modal-overlay.closing, .qrcode-egg-overlay.closing { animation: fadeOut var(--dur-base) var(--ease-in-out) forwards; }
+.modal-overlay.closing, .model-modal-overlay.closing { animation: fadeOut var(--dur-base) var(--ease-in-out) forwards; }
 .modal-overlay.closing .modal, .model-modal-overlay.closing .model-modal,
 .modal-overlay.closing .skill-modal { animation: popOut var(--dur-base) var(--ease-in-out) forwards; }
 .model-modal-overlay.closing .model-modal { animation: popOut var(--dur-base) var(--ease-in-out) forwards; }

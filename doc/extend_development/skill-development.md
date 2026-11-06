@@ -3,7 +3,7 @@
 > 本文管**一类**扩展：注册工具，交给模型决定什么时候用。
 > 另一类是**确定性型**（`plugins/`，满足条件必然触发、不经过 LLM），见
 > [plugin-development.md](./plugin-development.md)。
-> 两者的共同机制（清单字段、生命周期、能力系统、热重载、上架）见
+> 两者的共同机制（清单字段、生命周期、能力系统、热重载）见
 > [skill-reference.md](./skill-reference.md)。
 
 ---
@@ -184,7 +184,7 @@ test/my-skill-test.mjs
 | `enabledByDefault` | | 用户从没配置过时用这个。**默认 `true`**，新技能建议显式写 `false` |
 | `category` | | `model` / `message` / `knowledge` / `media` / `utility`。非法值会被回退成 `utility` 并记 problem |
 | `description` | | 一句话说明（UI 展示） |
-| `author` | | 作者署名；上架时用作市场里的名字 |
+| `author` | | 作者署名 |
 | `prompt` | | 提示词片段，见 §7 |
 | `settings` | | 默认配置值，见 §8 |
 | `configSchema` | | 配置项声明（UI 据此渲染表单），见 §8 |
@@ -426,19 +426,9 @@ export function dispose() { /* 卸载/热重载时最后清理 */ }
 
 ---
 
-## 10. 上架到市场
+## 10. 在另一实例安装
 
-1. 把技能目录打包成 zip（压缩包内**直接**是 `skill.json` + `index.js` + 子目录，不要多套一层文件夹）
-2. `POST /api/community/skills/upload`，multipart，字段名 **`file`**
-3. 服务端校验：
-   - 压缩包 ≤ **8MB**，解压后 ≤ **32MB**，文件数 ≤ **100**
-   - 必须含 `skill.json` 或 `plugin.json`
-   - 清单必须是合法 UTF-8 JSON（**不能带 BOM**）
-   - `id` 合法且**未被占用**（重复 → 409）
-   - 禁止绝对路径 / `..`；**禁止 `.exe .dll .bat .cmd .ps1 .vbs .sh`**
-4. 服务端生成 `entry.json`（市场元数据）并缓存打包好的 zip（用户下载时**不含** `entry.json`）
-
-**打包前必须清掉**：`node_modules/`、`data/`、API Key 等敏感文件、`entry.json`（那是服务端的东西）。
+将技能目录复制到目标实例的 `skills/<id>/`，在 Web UI 的「技能」页点击「刷新」并查看加载状态。密钥通过目标实例的设置填写。
 
 ---
 
@@ -489,8 +479,6 @@ export function dispose() { /* 卸载/热重载时最后清理 */ }
 | 消息重复发送 | 绕过了 `ctx.sender` 直连 OneBot | 改用 `ctx.sender`（去重 + 留档都在里面） |
 | 放了目录进去没加载 | 热重载被关了 | 检查 `config.extensions.hotReload` |
 | 在「技能」页找不到它 | 放到了 `plugins/`（会显示在「插件」页） | 确认目录与类型一致；加载器启动日志也会警告 |
-| 上架被拒：`该 Skill id 已存在` | id 撞了 | 换 id 或走升级流程 |
-| 上架被拒：`禁止上传可执行文件` | 包里带了 `.bat` / `.py` 等 | 清掉 |
 
 ---
 

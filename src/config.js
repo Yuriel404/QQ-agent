@@ -80,7 +80,7 @@ export const DEFAULT_CONFIG = {
     priceOutputPerM: 0,     // 输出单价
     priceCachedPerM: 0,     // 输入且命中缓存的单价；留 0 时按 priceInputPerM 计
     useOfficialPrice: true, // true = 优先用内置官方价格表（按模型 id 匹配）
-    // 远程价格表地址由 src/community.js 固定为官网公开表（FIXED_PRICE_FEED_URL），
+    // 远程价格表使用 FIXED_PRICE_REMOTE_URL 指定的官网公开表，
     // 任何代码都不得再读/写 api.priceRemoteUrl —— 它是已废弃的历史字段，
     // loadConfig 时统一剔除（见 stripObsoleteFields），避免磁盘旧值继续冒充"生效地址"。
     // 按模型单独设定的价格：{ [模型 id]: { in, out, cached } }
@@ -302,15 +302,11 @@ export const DEFAULT_CONFIG = {
   // 被屏蔽群员的消息在入口处直接丢弃——不存档、不触发会话、不作为提示词背景。
   // 机器人自己的消息不受影响。仅群聊有意义（私聊要屏蔽请直接用白名单/黑名单）。
   blocklist: {},
-  // 全局屏蔽名单（"上云"）：[QQ号, ...]
+  // 本机的全局屏蔽名单：[QQ号, ...]
   // 与 blocklist 的区别：blocklist 是按群单独屏蔽；globalBlocklist 对**所有群**生效——
   // 一旦某人被加进来，他在任何群里的消息都会被丢弃（含私聊）。
   // 用于"这个人在所有群里都不该再被机器人看到"的场景（如骚扰者、广告号）。
   globalBlocklist: [],
-  // 本机豁免名单：无管理密钥时"本机解除全局屏蔽"的持久化记录。
-  // 云端名单仍含这些 id（移除需要密钥），但本机用 getGlobalBlocklist() 时扣除它们。
-  // 独立字段 —— 5 分钟一次的云端同步会整体覆盖 globalBlocklist，但不会碰这里。
-  communityExemptions: [],
   // 指令禁言：群内任何人 @机器人 并发送指定指令后，机器人暂时把响应档位固定为 1 档（仅艾特）。
   // 用于群里太吵时让机器人"闭嘴"，只回应被直接点名。
   commandMute: {
@@ -404,16 +400,26 @@ export function deepMerge(base, override) {
   return out;
 }
 
+function normalizeGlobalBlocklist(config) {
+  // 旧版把已解除屏蔽的号码另存为豁免项。升级时从已保存的名单扣除它们。
+  const exemptions = Array.isArray(config.communityExemptions) ? config.communityExemptions : [];
+  const exempt = new Set(exemptions.map((id) => String(id).trim()));
+  const ids = Array.isArray(config.globalBlocklist) ? config.globalBlocklist : [];
+  const valid = ids.map((id) => String(id).trim()).filter((id) => /^\d{1,12}$/.test(id) && !exempt.has(id));
+  config.globalBlocklist = [...new Set(valid)].slice(0, 20000);
+  delete config.communityExemptions;
+  return config;
+}
+
 export function loadConfig() {
   try {
     let text = fs.readFileSync(CONFIG_FILE, 'utf8');
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
     const parsed = JSON.parse(text);
-    return deepMerge(DEFAULT_CONFIG, stripObsoleteFields(migrateLegacySkills(parsed)));
+    return normalizeGlobalBlocklist(deepMerge(DEFAULT_CONFIG, stripObsoleteFields(migrateLegacySkills(parsed))));
   } catch (error) {
     // ⚠️ 配置文件坏了（手改错/磁盘故障）不能静默回落默认值：
-    //   曾经直接返回 DEFAULT，随后任何 updateConfig（比如 5 分钟一次的
-    //   云端屏蔽名单同步）都会以默认配置为底整体写回 config.json ——
+    //   曾经直接返回 DEFAULT，随后任何 updateConfig 都会以默认配置为底整体写回 config.json ——
     //   用户的 Key/白名单/人设被静默抹成出厂值。
     //   现在先把坏文件改名备份（原始数据可手工抢救），再回落默认，
     //   并打 error 日志提醒用户。
@@ -495,7 +501,7 @@ export function migrateLegacySkills(parsed) {
  * 剔除**废弃字段**（磁盘/回传 patch 都可能带着的历史残留）。
  * 这些字段已无任何读点，留着只会冒充"生效配置"继续漂移：
  *   · api.stream          —— llm.js 请求体硬编码 stream:false（无 UI、无读点）
- *   · api.priceRemoteUrl  —— 远程价格表地址固定为 src/community.js 的常量
+ *   · api.priceRemoteUrl  —— 远程价格表地址由 FIXED_PRICE_REMOTE_URL 固定
  *   · budget（容器整体）  —— 预算保险丝功能已移除，容器本身也无读点
  *   · store.peakSchedule.valley.start/end —— "高峰外=低谷"语义下无人读
  *     （peakSchedule.valley.sliderPos 保留，peakSchedule.custom.valley 同口径只留 sliderPos）
@@ -603,7 +609,7 @@ export function updateConfig(patch) {
   // 测试报 invalid API key）。这里在合并前把"patch 条目缺密钥字段"的数组按 id
   // 回填现值；想真清除必须显式传 apiKey: ''（专用清除按钮就是显式空串路径）。
   preserveSanitizedSecrets(getConfig(), cleanObsolete);
-  currentConfig = deepMerge(getConfig(), cleanObsolete);
+  currentConfig = normalizeGlobalBlocklist(deepMerge(getConfig(), cleanObsolete));
   // 磁盘上可能已经存过历史遗留的派生标记，一并清掉
   stripDerivedFlags(currentConfig);
   stripObsoleteFields(currentConfig);

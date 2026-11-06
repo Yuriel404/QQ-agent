@@ -11,7 +11,7 @@
 > 选错类型的后果是**功能静默失效**（不报错、不崩、就是没反应），所以这两份文档请务必先读。
 >
 > **本文是两型共用的机制手册**：清单字段、生命周期、能力系统、状态判定、OneBot 接口、
-> 上架流程、硬约束、失败排查。两型在这部分完全一致，所以不再重复。
+> 本地安装、硬约束、失败排查。两型在这部分完全一致，所以不再重复。
 >
 > ---
 >
@@ -38,7 +38,7 @@
 - [10. execute(ctx, args) 的 ctx 全量字段](#10-executectx-args-的-ctx-全量字段)
 - [11. 状态、错误码与工具可用性判定链](#11-状态错误码与工具可用性判定链)
 - [12. 命令速查](#12-命令速查)
-- [13. 上架到 Skill 市场](#13-上架到-skill-市场)
+- [13. 本地安装](#13-本地安装)
 - [14. 硬约束清单（AI 生成时必须遵守）](#14-硬约束清单ai-生成时必须遵守)
 - [15. 常见失败对照表](#15-常见失败对照表)
 - [16. 完整示例](#16-完整示例)
@@ -126,8 +126,7 @@ export function setup(api) {
   skills/my-skill/lib/helper.js     ✅ 正确（在技能内部）
   skills/shared/helper.js           ❌ 会被当成一个 Skill 加载并失败
   ```
-- 技能目录里**不要**放：`node_modules/`、`data/`、API Key 等敏感文件、`entry.json`
-  （`entry.json` 是**服务端**的市场元数据，上传时由服务端生成，手写它没有意义）。
+- 技能目录里**不要**放：`node_modules/`、`data/`、API Key 等敏感文件。
 - 一个技能 = 一个目录，目录名建议与 `id` 一致（不一致时以 manifest 的 `id` 为准）。
 
 ### 0.2 AI 不需要动的文件（别多手）
@@ -135,7 +134,6 @@ export function setup(api) {
 | 文件 | 谁写 | 说明 |
 |---|---|---|
 | `data/config.json` 里的 `skills.<id>` | **程序自动** | 用户改开关/设置时才写入。AI 不要去手改配置文件 |
-| `data/community/skills/<id>/{entry.json,...}` | **服务端自动** | 上架时生成，并缓存打包好的 zip |
 | `src/*.js`（加载器、工具注册、能力系统） | 人工 | **加 Skill 不需要改核心代码**。Skill 通过能力名被核心取用，不是核心来 import 你 |
 | `ui/*.js`（控制台前端） | 人工 | 设置页表单由 `configSchema` 自动渲染，不需要写前端 |
 
@@ -1033,47 +1031,9 @@ npm test               # 全量
 
 ---
 
-## 13. 上架到 Skill 市场
+## 13. 本地安装
 
-### 13.1 打包
-
-zip 内保留目录层级（目录名不限，建议用 skill id）：
-
-```
-my-skill.zip
-└── my-skill/
-    ├── skill.json
-    ├── index.js
-    └── （其它源码文件）
-```
-
-### 13.2 上传
-
-打开 <https://www.kondius.cn/qq-agent/skill-market/> → 「上传 Skill ZIP」。
-
-对应接口：`POST /api/community/skills/upload`（multipart，字段名 `file`）。
-
-### 13.3 服务端校验规则
-
-| 规则 | 值 |
-|---|---|
-| 文件类型 | 仅 zip |
-| 单包大小 | ≤ 8 MB |
-| 解压后总大小 | ≤ 32 MB |
-| 解压后文件数 | ≤ 100 |
-| 禁止的文件后缀 | `exe` `dll` `bat` `cmd` `ps1` `vbs` `sh` |
-| 禁止的路径 | 绝对路径、含 `..`（含 `\` 变体） |
-| `id` | 必须合法且不重名，重名返回 **409** |
-| `category` | 按加载器白名单收敛（`system`/`web` 等旧值映射到 `utility`） |
-
-`category` 若顶层没写，会取 `tools[0].category`（兼容旧插件格式）。
-
-### 13.4 上架前必查
-
-- [ ] 代码里**没有**你自己的 API Key、密码、内网地址
-- [ ] 跑通 `npm run test:audit`
-- [ ] 在真机群聊里试过：正常输入、含糊输入、**不给参数**、**接口失败**
-- [ ] `description` 写得足够具体（模型才会调用）
+将扩展的清单、入口文件和源码放在同一目录。将整个目录复制到目标实例的 `skills/<id>/`（技能）或 `plugins/<id>/`（插件），打开对应的 Web UI 页签刷新并查看加载状态。
 
 ---
 
@@ -1085,7 +1045,7 @@ my-skill.zip
 
 - [ ] 目录 `skills/<id>/`，含 `skill.json` + `index.js`（**只要这两个就能跑**）
 - [ ] **没有**在 `skills/` 下另建共享目录（只扫一级子目录，会被误当 Skill）
-- [ ] 技能目录里**没有** `entry.json` / `node_modules` / `data/` / 密钥文件
+- [ ] 技能目录里**没有** `node_modules` / `data/` / 密钥文件
 - [ ] 测试文件放 `test/` 而不是技能目录里
 - [ ] `id` 匹配 `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`
 - [ ] `category` ∈ `{model, message, knowledge, media, utility}`
@@ -1156,7 +1116,6 @@ my-skill.zip
 | 改文件没反应 | 没开开发模式 | `QQ_AGENT_DEV=1 npm run server` |
 | 中文变 `锛?` | 用 PowerShell 读过并写回 | 改用编辑器；绝不要用 PowerShell 写入 |
 | 测试报 `已有 QQ Agent 实例在运行` | 测试没隔离数据目录 | 测试前设 `QQ_AGENT_DATA_DIR` 到临时目录，且**在 import 之前**设 |
-| 上传市场 409 | id 重名 | 换 id |
 | hook 不生效 | Skill 不是 active | 先确认「插件」页状态是"生效中"（钩子属确定性型） |
 
 ---

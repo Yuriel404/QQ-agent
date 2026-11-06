@@ -20,14 +20,12 @@ import { VideoReader } from './video-reader.js';
 import { cacheHitRate } from './llm.js';
 import { isPeakHour, priceAt, resolveModelPrice, modelLabel, splitModelLabel, UNKNOWN_VENDOR } from './model-prices.js';
 import { initPriceFeed } from './price-feed.js';
-import { startTelemetryLoop } from './telemetry.js';
 import { loadPlugins, watchPlugins } from './plugin-loader.js';
 import { skillManager } from './skills/manager.js';
 import { extractCandidateUrls, dispatchMediaLinks } from './media-links.js';
 import { createRoutes } from './routes.js';
 import * as instanceLockModule from './instance-lock.js';
 import { logger } from './logger.js';
-import { startCommunitySync, isGloballyBlocked, FIXED_PRICE_FEED_URL } from './community.js';
 
 // 全局 fetch（undici）默认连接建立超时只有 10 秒，openrouter.ai 这类海外端点
 // 握手慢时会直接报 "Connect Timeout Error ... timeout: 10000ms"（注意这不是
@@ -648,11 +646,7 @@ export function createApp({ log = console.log } = {}) {
   const orchestrator = new Orchestrator({ store, memory, stickers, sender, sessions, onebot, emit, reminders, videoReader });
 
   // 远程价格表固定为官网公开地址；不从用户配置读取，避免被页面/配置篡改。
-  initPriceFeed(FIXED_PRICE_FEED_URL);
-
-  // 云端统一屏蔽名单：启动先用 data 缓存，后台同步；网络失败不影响本地拦截。
-  const communitySyncTimer = startCommunitySync(log);
-  communitySyncTimer.unref?.();
+  initPriceFeed();
 
   // OneBot 连接状态推送
   onebot.onStatus((status) => emit('onebot-status', status));
@@ -833,8 +827,7 @@ export function createApp({ log = console.log } = {}) {
     // 放在最前面：连合并转发展开这种网络请求都不值得为它做。
     // 两道屏蔽：全局（所有群+私聊）优先，其次按群。
     if (senderId) {
-      const globalBlocked = isGloballyBlocked(senderId);
-      if (globalBlocked) return;
+      if (cfgNow.globalBlocklist.includes(senderId)) return;
       if (kind === 'group' && (cfgNow.blocklist?.[id] || []).map(String).includes(senderId)) return;
     }
     const media = segments ? extractMediaFromSegments(segments) : [];
@@ -856,7 +849,7 @@ export function createApp({ log = console.log } = {}) {
     // 合并转发：占位符 → 展开真实内容（模型要读懂、看懂转发的聊天记录）
     // 实测结论（2026-09-05，SnowLuma/NapCat）：get_forward_msg 只认 message_id；
     // res_id（转发卡片里那个 id）会过期，报 "payload is empty"。
-    // 媒体里的 url 此时是新鲜的，一并收进 media（取图/金句都能用）。
+    // 转发里的媒体地址此时仍有效，一并收进 media 供取图使用。
     // 展开失败时占位符留在存档里，模型可用 read_forward 工具稍后重试。
     if (segments && (text.includes('[合并转发') || text.includes('[转发消息')) && event.message_id != null) {
       try {
@@ -983,7 +976,7 @@ export function createApp({ log = console.log } = {}) {
     if (operatorId && operatorId === onebot.selfId) return;
     // 屏蔽名单对拍一拍同样生效（操作者是被屏蔽群员则丢弃）：全局优先，其次按群
     if (operatorId) {
-      if (isGloballyBlocked(operatorId)) return;
+      if (cfgNow.globalBlocklist.includes(operatorId)) return;
       if (isGroup && (cfgNow.blocklist?.[id] || []).map(String).includes(operatorId)) return;
     }
     const targetId = String(event.target_id ?? event.user_id ?? '');
@@ -1408,8 +1401,6 @@ export function createApp({ log = console.log } = {}) {
       try {
         const data = fs.readFileSync(fullPath);
         const ext = path.extname(fullPath);
-        // jpg/jpeg/webp/gif/ico：设置页群二维码彩蛋（group-qrcode.jpg）与
-        // 市场页图片要用 —— 曾经只认 png/svg，jpg 会以 octet-stream 下载而非显示
         const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8' };
         const headers = { 'content-type': types[ext] ?? 'application/octet-stream', 'cache-control': 'no-cache' };
         if (ext === '.html') {
@@ -1418,18 +1409,15 @@ export function createApp({ log = console.log } = {}) {
           // ⚠️ script-src 与 index.html 的 meta 版本同款（sha256 hash 精确放行
           //    首屏主题预置脚本，不含 unsafe-inline）—— 两处口径必须一致，
           //    否则 meta 被剥离的场景下 unsafe-inline 立即生效。
-          // 2026-09-26：验证码 SDK 需要动态加载 o.alicdn.com（及 kondius.cn 反代）、
-          //    XHR 到 *.aliyuncs.com —— 与 meta 版本同步放行；**meta 与 HTTP 头两份
-          //    CSP 浏览器取交集执行，只改一处等于没改**（本次 alicdn 加载失败即漏改此处）。
           headers['content-security-policy'] = [
             "default-src 'self'",
-            "script-src 'self' 'sha256-xBF5qExTuqfXHlYtKYaaldGJshQgQOr5zvcGHjbPL7w=' https://o.alicdn.com https://kondius.cn",
+            "script-src 'self' 'sha256-HJ5DwBIuT8nMl6SGSb24X9oSvsfDcsGPIkCgmk97V7I='",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: blob: http: https:",
             "media-src 'self' data: blob:",
-            "connect-src 'self' https://kondius.cn https://*.aliyuncs.com https://*.alicdn.com",
-            "frame-src https://*.aliyuncs.com https://*.alicdn.com https://kondius.cn",
-            "worker-src 'self' blob: https://*.alicdn.com https://kondius.cn",
+            "connect-src 'self'",
+            "frame-src 'none'",
+            "worker-src 'self'",
             "font-src 'self' data:",
             "object-src 'none'",
             "base-uri 'none'",
@@ -1468,13 +1456,7 @@ export function createApp({ log = console.log } = {}) {
   }
 
   async function start() {
-    // ── 启动顺序（2026-09-18 按耗时画像重排）────────────────────────────
-    // 旧顺序的瓶颈：HTTP → 遥测 → Skill加载(串行import) → SnowLuma启动(最长20s等端口)
-    //              → OneBot连接 → 就绪日志。Skill 与 SnowLuma 互不依赖却串行，
-    //              白白把两段等待加在一起。
-    // 新顺序：HTTP（页面先活）→ 遥测(纯后台) → **Skill 与 SnowLuma 并行** →
-    //         OneBot 连接 → 就绪。会话索引的磁盘对账（reconcileInBackground）
-    //         在 HTTP 起来后就排上，不占启动关键路径。
+    // 先开放 HTTP 控制台，再并行加载技能与启动 SnowLuma。
     const basePort = Number(getConfig().server?.port) || 3210;
     let port = null;
     let lastError = null;
@@ -1488,9 +1470,6 @@ export function createApp({ log = console.log } = {}) {
       }
     }
     if (port == null) throw lastError ?? new Error('无法监听端口');
-
-    // 匿名用量遥测：启动 90 秒后发第一次，之后每 6 小时一次；失败静默不影响使用
-    startTelemetryLoop(log);
 
     // 会话索引后台对账：启动读的是毫秒级缓存，这里异步补扫磁盘修正差异
     // （缓存缺失的新文件/外部删除的文件）。不 await —— 不挡任何启动步骤。
@@ -1639,7 +1618,6 @@ export function createApp({ log = console.log } = {}) {
     pluginWatcher = null;
     await orchestrator.abortAll();
     orchestrator.stopReminderLoop();
-    if (communitySyncTimer) clearInterval(communitySyncTimer);
     if (obPortPollTimer) clearInterval(obPortPollTimer);
     // 索引缓存立刻落盘：正常运行中靠防抖（5s），退出前必须写一次，
     // 否则最后的会话变动丢失、下次启动要靠后台对账补（慢路径）

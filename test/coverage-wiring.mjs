@@ -123,8 +123,7 @@ function scan(label) {
     try {
       const cs = window.getComputedStyle(el);
       hidden = cs.display === 'none' || cs.visibility === 'hidden';
-      // 屏幕外锚点（left/top: -9999px）：视觉上永远不可见，是给 SDK 挂的隐藏元素
-      // （如阿里云验证码的 #captcha-trigger），不属于"看得见但点了没反应"的缺陷。
+      // 位于屏幕外的元素不可见。
       if (!hidden && /-999\d+px/.test(String(cs.left || '') + String(cs.top || ''))) hidden = true;
     } catch { /* ignore */ }
     const isWired = wired(el);
@@ -195,7 +194,7 @@ for (const sec of sections) {
 // 参数与"前置设置分区"按各函数签名/依赖给：有些函数会先读写本分区的元素
 //（如 openWhitelistPicker 开头就写 #pick-result），分区不对就会抛 null。
 const MODALS = [
-  ['提示弹窗', 'showNoticeModal', ['测试标题', '测试正文'], null],
+  ['本地技能创建指南', 'openCreateModuleGuide', ['skill'], null],
   ['调用明细', 'openToolBreakdown', [], null],
   ['用量下钻', 'openUsageBreakdown', ['model', 'm0'], null],
   ['人设选择器', 'openPersonaPicker', [], 'persona'],
@@ -208,7 +207,6 @@ const MODALS = [
   ['模型管理', 'openModelManageModal', [], 'api'],
   ['批量价格编辑', 'openBatchPriceModal', [], 'api'],
   ['屏蔽名单', 'openBlocklistModal', [], 'chat'],
-  ['意见反馈', 'openFeedbackModal', [], null],
   ['群白名单选择', 'openWhitelistPicker', ['groups'], 'allow'],
   ['好友白名单选择', 'openWhitelistPicker', ['friends'], 'allow']
 ];
