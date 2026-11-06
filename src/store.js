@@ -1,4 +1,4 @@
-// 每个会话（group:xxx / private:xxx）一个不断增长的 JSON 消息存储。
+// 每个会话（group:xxx / private:xxx）采用分页 JSON 存档。
 // 这是新架构的核心数据结构：模型不携带对话历史，每次运行都从这里拼接"已读信息"。
 //
 // 条目格式：
@@ -14,76 +14,59 @@
 //   reply:     可选 { sender, text }：该消息引用/回复的对象摘要
 //   media:     可选 [{ kind, url, file, faceId, summary }] 原始媒体定位信息
 // }
-import fs from 'node:fs';
-import path from 'node:path';
-import { DATA_DIR } from './config.js';
+import { ChatArchive, listArchivedChats } from './chat-archive.js';
 
-const MESSAGES_DIR = path.join(DATA_DIR, 'messages');
+function isUnread(row) { return !row.self && !row.read; }
 
-function chatFile(chatKey) {
-  // chatKey 形如 group:123 / private:456
-  const safe = String(chatKey).replace(/[^a-z0-9_]/gi, '_');
-  return path.join(MESSAGES_DIR, `${safe}.json`);
+function findEntry(archive, predicate, localId) {
+  for (const [index, page] of archive.pages.entries()) {
+    if (localId !== undefined && (localId < page.firstId || localId > page.lastId)) continue;
+    const rows = archive.read(page);
+    const entry = rows.find(predicate);
+    if (entry) return { index, rows, entry };
+  }
+  return null;
 }
 
-function loadChat(chatKey) {
-  try {
-    let text = fs.readFileSync(chatFile(chatKey), 'utf8');
-    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-    const parsed = JSON.parse(text);
-    if (parsed && Array.isArray(parsed.messages)) return parsed;
-  } catch { /* 新会话 */ }
-  return { chatKey, nextLocalId: 1, messages: [] };
+function findMid(archive, mid) {
+  const target = String(mid);
+  return findEntry(archive, (row) => String(row.mid) === target);
 }
 
-function saveChat(state) {
-  fs.mkdirSync(MESSAGES_DIR, { recursive: true });
-  const tmp = `${chatFile(state.chatKey)}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 1), 'utf8');
-  fs.renameSync(tmp, chatFile(state.chatKey));
+function updateReadState(archive, selectPage, change) {
+  let changed = 0;
+  for (const [index, page] of archive.pages.entries()) {
+    if (!selectPage(page)) continue;
+    const rows = archive.read(page);
+    let modified = false;
+    for (const row of rows) {
+      if (change(row)) { changed++; modified = true; }
+    }
+    if (modified) archive.replace(index, rows);
+  }
+  archive.commit();
+  return changed;
 }
 
 export class ChatStore {
   constructor(maxPerChat = 0) {
-    this.maxPerChat = Math.max(0, Number(maxPerChat) || 0);
-    this.chats = new Map(); // chatKey -> state
+    this.setMaxPerChat(maxPerChat);
   }
 
   setMaxPerChat(cap) {
     this.maxPerChat = Math.max(0, Number(cap) || 0);
   }
 
-  #state(chatKey) {
-    if (!this.chats.has(chatKey)) this.chats.set(chatKey, loadChat(chatKey));
-    return this.chats.get(chatKey);
-  }
-
-  listChats() {
-    // 从磁盘文件名还原（group_123.json -> group:123），已加载的直接带上
-    try {
-      const files = fs.readdirSync(MESSAGES_DIR).filter((f) => /^(group|private)_\d+\.json$/.test(f));
-      for (const f of files) {
-        const m = /^(group|private)_(\d+)\.json$/.exec(f);
-        if (m) this.#state(`${m[1]}:${m[2]}`);
-      }
-    } catch { /* 目录不存在 */ }
-    return [...this.chats.keys()];
-  }
+  listChats() { return listArchivedChats(); }
 
   getChatMeta(chatKey) {
-    const st = this.#state(chatKey);
-    // 未读只计他人消息（与 unreadCount / peekUnread 口径一致）——
-    // 曾经用 !m.read 把 self 也算进去，机器人自己的发言会把角标顶大。
-    const unread = st.messages.filter((m) => !m.read && !m.self).length;
-    const last = st.messages[st.messages.length - 1] || null;
-    return { chatKey, total: st.messages.length, unread, lastTs: last?.ts ?? 0, lastText: last?.text ?? '' };
+    const { total, unread, lastTs, lastText } = new ChatArchive(chatKey).meta;
+    return { chatKey, total, unread, lastTs, lastText };
   }
 
   /** 追加一条收到的消息（未读）。返回写入的条目。 */
   appendIncoming(chatKey, { mid, ts, senderId, senderName, text, reply = null, media = [], isPoke = false, atMe = null, atNames = [] }) {
-    const st = this.#state(chatKey);
     const entry = {
-      id: st.nextLocalId++,
       mid: mid ?? null,
       ts: ts || Date.now(),
       senderId: String(senderId ?? ''),
@@ -103,17 +86,12 @@ export class ChatStore {
       // 防"@ 别人的名字里带关键词"误触发。空数组 = 该消息没有 @ 段。
       atNames: (Array.isArray(atNames) ? atNames : []).map((n) => String(n ?? '')).filter(Boolean).slice(0, 20)
     };
-    st.messages.push(entry);
-    this.#trim(st);
-    saveChat(st);
-    return entry;
+    return new ChatArchive(chatKey).append(entry, this.maxPerChat);
   }
 
   /** 记录机器人自己发出的消息（已读）。 */
   appendSelf(chatKey, { text, ts, mid = null }) {
-    const st = this.#state(chatKey);
     const entry = {
-      id: st.nextLocalId++,
       mid: mid ?? null,
       ts: ts || Date.now(),
       senderId: 'self',
@@ -124,19 +102,12 @@ export class ChatStore {
       reply: null,
       media: []
     };
-    st.messages.push(entry);
-    this.#trim(st);
-    saveChat(st);
-    return entry;
+    return new ChatArchive(chatKey).append(entry, this.maxPerChat);
   }
 
   /** 快照当前未读并全部置为已读（运行开始时调用）。 */
   drainUnread(chatKey) {
-    const st = this.#state(chatKey);
-    const unread = st.messages.filter((m) => !m.read && !m.self);
-    for (const m of st.messages) m.read = true;
-    saveChat(st);
-    return unread;
+    return this.drainUnreadFrom(chatKey, -Infinity).batch;
   }
 
   /**
@@ -154,16 +125,17 @@ export class ChatStore {
    * @returns {{ batch: object[], archived: number }} batch = 触发批，archived = 被归档的旧未读条数
    */
   drainUnreadFrom(chatKey, fromTs) {
-    const st = this.#state(chatKey);
-    const unread = st.messages.filter((m) => !m.read && !m.self);
     const batch = [];
     let archived = 0;
-    for (const m of unread) {
-      if (m.ts >= fromTs) batch.push(m);
-      else { m.read = true; archived++; }   // 触发点之前的旧积压：沉入历史
-    }
-    for (const m of st.messages) m.read = true;   // batch 里的也置已读（作为触发批取走）
-    saveChat(st);
+    updateReadState(new ChatArchive(chatKey), (page) => page.pending > 0, (row) => {
+      if (row.read) return false;
+      if (!row.self) {
+        if (row.ts >= fromTs) batch.push(row);
+        else archived++;
+      }
+      row.read = true;
+      return true;
+    });
     return { batch, archived };
   }
 
@@ -178,13 +150,11 @@ export class ChatStore {
    * @returns {number} 被标记为已读的条数
    */
   markAllRead(chatKey) {
-    const st = this.#state(chatKey);
-    let n = 0;
-    for (const m of st.messages) {
-      if (!m.read && !m.self) { m.read = true; n++; }
-    }
-    if (n) saveChat(st);
-    return n;
+    return updateReadState(new ChatArchive(chatKey), (page) => page.unread > 0, (row) => {
+      if (!isUnread(row)) return false;
+      row.read = true;
+      return true;
+    });
   }
 
   /**
@@ -199,11 +169,12 @@ export class ChatStore {
    * @returns {boolean} 是否真的标记了（false = 没找到/本来就是已读）
    */
   markEntryRead(chatKey, id) {
-    const st = this.#state(chatKey);
-    const m = st.messages.find((x) => x.id === id);
-    if (!m || m.read || m.self) return false;
-    m.read = true;
-    saveChat(st);
+    const archive = new ChatArchive(chatKey);
+    const hit = findEntry(archive, (row) => row.id === id, id);
+    if (!hit || !isUnread(hit.entry)) return false;
+    hit.entry.read = true;
+    archive.replace(hit.index, hit.rows);
+    archive.commit();
     return true;
   }
 
@@ -216,41 +187,53 @@ export class ChatStore {
    * @returns {number} 恢复为未读的条数
    */
   markUnreadInWindow(chatKey, startedAt, endedAt) {
-    const st = this.#state(chatKey);
-    const winStart = Number(startedAt) - 5 * 60 * 1000;
-    const winEnd = Number(endedAt || startedAt) + 1000;
-    let n = 0;
-    for (const m of st.messages) {
-      if (m.self) continue;
-      if (m.read && m.ts >= winStart && m.ts <= winEnd) { m.read = false; n++; }
-    }
-    if (n) saveChat(st);
-    return n;
+    const start = Number(startedAt) - 5 * 60 * 1000;
+    const end = Number(endedAt || startedAt) + 1000;
+    return updateReadState(new ChatArchive(chatKey), (p) => p.maxTs >= start && p.minTs <= end, (row) => {
+      if (row.self || !row.read || !(row.ts >= start && row.ts <= end)) return false;
+      row.read = false;
+      return true;
+    });
   }
 
-  unreadCount(chatKey) {
-    const st = this.#state(chatKey);
-    return st.messages.filter((m) => !m.read && !m.self).length;
-  }
+  unreadCount(chatKey) { return new ChatArchive(chatKey).meta.unread; }
 
-  /** 查看当前未读消息（不置已读），用于“等待中”会话的触发摘要。 */
   peekUnread(chatKey, limit = 3) {
-    const st = this.#state(chatKey);
-    return st.messages.filter((m) => !m.read && !m.self).slice(0, Math.max(1, Number(limit) || 3));
+    const archive = new ChatArchive(chatKey);
+    const max = Math.floor(Math.max(1, Number(limit) || 3));
+    const result = [];
+    for (const page of archive.pages) {
+      if (!page.unread) continue;
+      for (const row of archive.read(page)) {
+        if (isUnread(row)) result.push(row);
+        if (result.length >= max) return result;
+      }
+    }
+    return result;
   }
 
   recent(chatKey, { limit = 80, offset = 0, includeSelf = true } = {}) {
-    const st = this.#state(chatKey);
-    const all = includeSelf ? st.messages : st.messages.filter((m) => !m.self);
-    // offset = 跳过最近 N 条（用于工具翻页）。只读，绝不能修改 st.messages！
-    const start = Math.max(0, all.length - Math.max(0, Number(offset) || 0));
-    return all.slice(0, start).slice(-Math.max(1, Number(limit) || 1));
+    const archive = new ChatArchive(chatKey);
+    let skip = Math.ceil(Math.max(0, Number(offset) || 0));
+    const max = Math.floor(Math.max(1, Number(limit) || 1));
+    const result = [];
+    for (let i = archive.pages.length - 1; i >= 0; i--) {
+      const page = archive.pages[i];
+      const count = includeSelf ? page.count : page.incoming;
+      if (skip >= count) { skip -= count; continue; }
+      const rows = archive.read(page);
+      for (let j = rows.length - 1; j >= 0; j--) {
+        if (!includeSelf && rows[j].self) continue;
+        if (skip) { skip--; continue; }
+        result.push(rows[j]);
+        if (result.length >= max) return result.reverse();
+      }
+    }
+    return result.reverse();
   }
 
   findByMid(chatKey, mid) {
-    const st = this.#state(chatKey);
-    const target = String(mid);
-    return st.messages.find((m) => String(m.mid) === target) || null;
+    return findMid(new ChatArchive(chatKey), mid)?.entry ?? null;
   }
 
   /**
@@ -259,13 +242,13 @@ export class ChatStore {
    * @returns {boolean} 是否找到并标记了
    */
   markRecalled(chatKey, mid) {
-    const st = this.#state(chatKey);
-    const target = String(mid);
-    const m = st.messages.find((x) => String(x.mid) === target);
-    if (!m) return false;
-    m.recalled = true;
-    m.read = true;   // 撤回的消息也算"已读"，不再触发回复
-    saveChat(st);
+    const archive = new ChatArchive(chatKey);
+    const hit = findMid(archive, mid);
+    if (!hit) return false;
+    hit.entry.recalled = true;
+    hit.entry.read = true;
+    archive.replace(hit.index, hit.rows);
+    archive.commit();
     return true;
   }
 
@@ -275,10 +258,10 @@ export class ChatStore {
    * 模型和存档页都能直接读取展开内容。
    */
   updateByMid(chatKey, mid, { text, appendMedia = [] } = {}) {
-    const st = this.#state(chatKey);
-    const target = String(mid);
-    const m = st.messages.find((x) => String(x.mid) === target);
-    if (!m) return false;
+    const archive = new ChatArchive(chatKey);
+    const hit = findMid(archive, mid);
+    if (!hit) return false;
+    const m = hit.entry;
     if (text != null) m.text = String(text);
     if (appendMedia.length) {
       m.media = Array.isArray(m.media) ? m.media : [];
@@ -287,13 +270,14 @@ export class ChatStore {
         if (x && x.url && !seen.has(x.url)) { m.media.push(x); seen.add(x.url); }
       }
     }
-    saveChat(st);
+    archive.replace(hit.index, hit.rows);
+    archive.commit();
     return true;
   }
 
   findByLocalId(chatKey, localId) {
-    const st = this.#state(chatKey);
-    return st.messages.find((m) => m.id === Number(localId)) || null;
+    const id = Number(localId);
+    return findEntry(new ChatArchive(chatKey), (row) => row.id === id, id)?.entry ?? null;
   }
 
   /**
@@ -302,13 +286,24 @@ export class ChatStore {
    * @param {number[]} localIds 本地递增 id 数组
    */
   removeByLocalIds(chatKey, localIds = []) {
-    const st = this.#state(chatKey);
-    const ids = new Set((Array.isArray(localIds) ? localIds : [localIds]).map(Number));
-    if (!ids.size) return 0;
-    const before = st.messages.length;
-    st.messages = st.messages.filter((m) => !ids.has(m.id));
-    const removed = before - st.messages.length;
-    if (removed) saveChat(st);
+    const ids = (Array.isArray(localIds) ? localIds : [localIds]).map(Number).filter(Number.isFinite);
+    if (!ids.length) return 0;
+    ids.sort((a, b) => b - a);
+    const archive = new ChatArchive(chatKey);
+    let cursor = 0, removed = 0;
+    for (let i = archive.pages.length - 1; i >= 0 && cursor < ids.length; i--) {
+      const page = archive.pages[i];
+      while (cursor < ids.length && ids[cursor] > page.lastId) cursor++;
+      const matching = new Set();
+      while (cursor < ids.length && ids[cursor] >= page.firstId) matching.add(ids[cursor++]);
+      if (!matching.size) continue;
+      const remaining = archive.read(page).filter((row) => !matching.has(row.id));
+      if (remaining.length !== page.count) {
+        removed += page.count - remaining.length;
+        archive.replace(i, remaining);
+      }
+    }
+    archive.commit();
     return removed;
   }
 
@@ -317,12 +312,10 @@ export class ChatStore {
    * 会话文件保留（空 messages），下次来消息继续往里写。
    */
   clearChat(chatKey) {
-    const st = this.#state(chatKey);
-    const removed = st.messages.length;
-    if (removed) {
-      st.messages = [];
-      saveChat(st);
-    }
+    const archive = new ChatArchive(chatKey);
+    const removed = archive.meta.total;
+    while (archive.pages.length) archive.replace(archive.pages.length - 1, []);
+    archive.commit();
     return removed;
   }
 
@@ -337,23 +330,20 @@ export class ChatStore {
 
   /** 最近 senderId 出现过的活跃成员（带最后发言时间）。 */
   activeMembers(chatKey, limit = 10) {
-    const st = this.#state(chatKey);
+    const archive = new ChatArchive(chatKey);
     const map = new Map();
-    for (const m of st.messages) {
-      if (m.self) continue;
-      const prev = map.get(m.senderId);
-      if (!prev || prev.lastTs < m.ts) {
-        map.set(m.senderId, { userId: m.senderId, name: m.senderName, lastTs: m.ts, count: (prev?.count || 0) + 1 });
-      } else {
-        prev.count += 1;
+    for (const page of archive.pages) {
+      if (!page.incoming) continue;
+      for (const m of archive.read(page)) {
+        if (m.self) continue;
+        const prev = map.get(m.senderId);
+        if (!prev || prev.lastTs < m.ts) {
+          map.set(m.senderId, { userId: m.senderId, name: m.senderName, lastTs: m.ts, count: (prev?.count || 0) + 1 });
+        } else {
+          prev.count += 1;
+        }
       }
     }
     return [...map.values()].sort((a, b) => b.lastTs - a.lastTs).slice(0, Math.max(1, limit));
-  }
-
-  #trim(st) {
-    if (this.maxPerChat > 0 && st.messages.length > this.maxPerChat) {
-      st.messages.splice(0, st.messages.length - this.maxPerChat);
-    }
   }
 }

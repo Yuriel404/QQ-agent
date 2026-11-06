@@ -132,6 +132,8 @@ npm run test:wiring   # 只跑「界面接线」检查（需要可选依赖，�
 
 也可以在配置文件中使用 `server.host`、`server.port`、`server.token` 和 `server.allowedOrigins`（字符串数组）。环境变量优先。监听地址和可信来源在重启后生效。
 
+容器持久化时，将 `QQ_AGENT_DATA_DIR` 指向运行用户可写的数据卷，每个数据卷只运行一个实例。升级前请先停机备份该目录。首次访问旧聊天时会自动迁移到分页格式，回退旧版本时需同时恢复升级前的备份。
+
 ### 界面接线检查（可选依赖）
 `test/coverage-wiring.mjs` 用 jsdom 加载真实的 `ui/index.html` 并执行 `ui/app.js`，
 然后按用户的真实操作路径（点页签 / 点设置分区 / 打开各弹窗）遍历，断言

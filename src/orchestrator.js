@@ -500,7 +500,7 @@ export class Orchestrator {
       }
     } else {
       // 主动机会：不打扰、无触发批，只带状态
-      this.store.drainUnread(chatKey); // 把可能的零星未读一并处理掉
+      this.store.markAllRead(chatKey); // 把可能的零星未读一并处理掉
     }
 
     // ── 档位：响应时带多少条已读历史 ──

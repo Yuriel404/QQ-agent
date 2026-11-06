@@ -1234,7 +1234,7 @@ export function createRoutes(deps) {
     },
     {
       method: 'POST', pattern: /^\/api\/chats\/(group|private)_(\d+)\/mark-read$/,
-      handler: async ({ res, json, match }) => json(res, 200, { ok: true, marked: store.drainUnread(`${match[1]}:${match[2]}`).length })
+      handler: async ({ res, json, match }) => json(res, 200, { ok: true, marked: store.markAllRead(`${match[1]}:${match[2]}`) })
     },
     {
       // 清空某会话的全部消息（整体清除存档）
@@ -1285,7 +1285,7 @@ export function createRoutes(deps) {
         orchestrator.setPaused(false);
         const marked = {};
         for (const chatKey of store.listChats()) {
-          const n = store.drainUnread(chatKey).length;
+          const n = store.markAllRead(chatKey);
           if (n > 0) marked[chatKey] = n;
         }
         emit('chat-update', '*');
