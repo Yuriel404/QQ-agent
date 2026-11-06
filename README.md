@@ -121,6 +121,17 @@ npm run test:coverage # 覆盖测试（模块层 + 全部 HTTP 接口 + 端到�
 npm run test:all      # 两套一起跑
 npm run test:wiring   # 只跑「界面接线」检查（需要可选依赖，见下）
 ```
+### Web 控制台登录
+
+浏览器打开控制台时会出现 HTTP 登录窗口。用户名是 `admin`，密码是控制台令牌。桌面应用会自动登录自己启动的本机服务。
+
+- 在本机终端运行 `npm run server`，默认监听 `127.0.0.1:3210`。没有设置令牌时，终端会显示仅本次启动有效的随机密码。
+- 容器或后台服务请预设 `QQ_AGENT_CONSOLE_TOKEN`。可用 `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` 生成随机值。脚本访问 API 时可通过 `x-console-token` 请求头传入该值。
+- 容器内设 `QQ_AGENT_HOST=0.0.0.0` 时，需要至少 32 字符的令牌。端口由 `QQ_AGENT_PORT` 指定。仅供本机访问时，将端口发布在宿主机回环地址，例如 `127.0.0.1:3210:3210`。
+- 使用域名远程访问时，在反向代理终止 HTTPS，保留请求的原始 `Host` 和 `Origin`，并设 `QQ_AGENT_ALLOWED_ORIGINS=https://bot.example.org`。支持多个以逗号分隔的来源。Basic 认证依赖 HTTPS 保护传输。
+
+也可以在配置文件中使用 `server.host`、`server.port`、`server.token` 和 `server.allowedOrigins`（字符串数组）。环境变量优先。监听地址和可信来源在重启后生效。
+
 ### 界面接线检查（可选依赖）
 `test/coverage-wiring.mjs` 用 jsdom 加载真实的 `ui/index.html` 并执行 `ui/app.js`，
 然后按用户的真实操作路径（点页签 / 点设置分区 / 打开各弹窗）遍历，断言

@@ -9,7 +9,15 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-const app = createApp();
+const app = createApp({
+  onGeneratedConsoleToken(token) {
+    if (!process.stdout.isTTY) {
+      throw new Error('非交互启动请设置 QQ_AGENT_CONSOLE_TOKEN 或 server.token');
+    }
+    // 只显示在操作者的终端，不进入应用日志、配置快照或 URL。
+    process.stdout.write(`Web 控制台用户名 admin，本次启动密码 ${token}\n`);
+  }
+});
 app.start().catch((error) => {
   console.error('[启动失败]', error);
   process.exit(1);

@@ -262,7 +262,7 @@ c.section('7. SSE 实时事件');
 {
   await c.check('SSE 连接可用，且会话事件实时推送', async () => {
     const events = [];
-    const req = http.get(`${ctx.base}/api/events`, (res) => {
+    const req = http.get(`${ctx.base}/api/events`, { headers: { 'x-console-token': app.getConsoleToken() } }, (res) => {
       assert.equal(res.statusCode, 200, 'SSE 应 200');
       res.setEncoding('utf8');
       res.on('data', (chunk) => { for (const line of String(chunk).split('\n')) if (line.startsWith('event:')) events.push(line.slice(6).trim()); });
@@ -701,7 +701,7 @@ c.section('11. 中始终态');
 {
   await c.check('会话运行中被 abortAll：状态置 aborted 且推送 session-end', async () => {
     const events = [];
-    const req = http.get(`${ctx.base}/api/events`, (res) => {
+    const req = http.get(`${ctx.base}/api/events`, { headers: { 'x-console-token': app.getConsoleToken() } }, (res) => {
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
         for (const block of String(chunk).split('\n\n')) {

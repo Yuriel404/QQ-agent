@@ -55,6 +55,7 @@ export async function detectModelVision({ baseUrl, apiKey, model }, timeoutMs = 
   let res;
   try {
     res = await fetch(joinUrl(baseUrl, '/chat/completions'), {
+      redirect: apiKey ? 'error' : 'follow',
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeaders(apiKey, baseUrl) },
       body: JSON.stringify({

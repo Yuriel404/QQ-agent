@@ -99,7 +99,7 @@ if (!JSDOM) {
   const dom = new JSDOM(html, { url: ctx.base + '/', runScripts: 'outside-only', pretendToBeVisual: true });
   const { window } = dom;
   // 与 coverage-wiring 同款环境垫片：fetch 代理到真实后端、EventSource/confirm 等空实现
-  window.fetch = (input, init) => fetch(new URL(String(input), ctx.base).href, init);
+  window.fetch = ctx.consoleFetch;
   window.EventSource = class { constructor() {} addEventListener() {} close() {} };
   window.alert = () => {};
   window.confirm = () => true;

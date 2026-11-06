@@ -604,7 +604,7 @@ const ctx = vm.createContext(sandbox);
           const realPort = await realApp.start(40991);
           const hit = (p) => new Promise((r) => {
             http.request({ host: '127.0.0.1', port: realPort, path: p, method: 'GET',
-              headers: { 'x-console-token': 'qq-agent-console' } },
+              headers: { 'x-console-token': realApp.getConsoleToken() } },
               (res) => { let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => r({ code: res.statusCode, d })); }
             ).on('error', () => r({ code: 0, d: '' })).end();
           });

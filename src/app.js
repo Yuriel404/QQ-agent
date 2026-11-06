@@ -1,6 +1,10 @@
 // 总装：OneBot 事件接入 → 存储 → 编排器；HTTP API + SSE 给 UI。
 // Electron 主进程与 headless 服务器都从这里启动。
 import http from 'node:http';
+import { once } from 'node:events';
+import { EventStreams } from './sse.js';
+import { isChatAllowed as allowed } from './chat-access.js';
+import { createConsoleAccess, CONSOLE_REALM } from './console-access.js';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,16 +45,6 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = path.resolve(__dirname, '..', 'ui');
 
-// ── 白名单判断（移植自原版 allowed()） ───────────────────────────────────
-function allowed(kind, id, cfg) {
-  const s = String(id);
-  const denyList = cfg.deny?.[kind] ?? cfg.deny?.[`${kind}s`] ?? [];
-  if (denyList.map(String).includes(s)) return false;
-  const allowList = cfg.allow?.[kind] ?? cfg.allow?.[`${kind}s`] ?? [];
-  if (allowList.length > 0) return allowList.map(String).includes(s);
-  return cfg.allowAllWhenEmpty === true;
-}
-
 // ── 版本更新检查 ─────────────────────────────────────────────────────
 // 线上版本信息只有一份：kondius.cn/qq-agent/version.json（发版时手动改）。
 // 由后端代取而不是前端直连：绕过 CORS，且失败信息能统一回给 UI。
@@ -79,8 +73,10 @@ function compareSemver(a, b) {
    防止监听器链式递归（见 createApp 内的递归护栏注释）。 */
 const appLogFns = new WeakSet();
 
-export function createApp({ log = console.log } = {}) {
+export function createApp({ log = console.log, onGeneratedConsoleToken } = {}) {
   const cfg = getConfig();
+  const consoleAccess = createConsoleAccess(() => getConfig().server || {});
+  if (consoleAccess.generated) onGeneratedConsoleToken?.(consoleAccess.token());
 
   // 详尽日志：把 createApp 的 log 接到分级日志系统（落盘 + 内存缓冲 + SSE）。
   // 关键：logger 的 mirrorConsole 已经会走 console，所以这里**只写 logger、不再调原 log**，
@@ -127,7 +123,7 @@ export function createApp({ log = console.log } = {}) {
      曾经只在 stop() 里释放 —— 进程被直接杀掉（任务管理器结束、控制台叉掉）
      时锁文件残留，下次启动要靠"PID 已死"探测才能清掉，多一层失败面。 */
   instanceLockModule.registerLockCleanup();
-  const sseClients = new Set();
+  const streams = new EventStreams();
 
   // ── SnowLuma 程序目录与进程管理 ──
   function snowlumaDir() {
@@ -561,12 +557,14 @@ export function createApp({ log = console.log } = {}) {
       // 回退：launcher.bat 独立控制台窗口（老行为，日志无法内置）
       const launcher = path.join(dir, 'launcher.bat');
       if (!fs.existsSync(launcher)) return { ok: false, error: `目录里没有 index.mjs / node.exe，也没有 launcher.bat：${dir}` };
+      if (process.platform !== 'win32') return { ok: false, error: '当前平台无法运行 SnowLuma 的 Windows 启动脚本' };
       const child = spawn('cmd.exe', ['/c', launcher], {
         cwd: dir,
         detached: true,
         stdio: 'ignore',
         windowsHide: false // 保留 SnowLuma 自己的控制台窗口
       });
+      await once(child, 'spawn');
       child.unref();
       pushSnowlumaLog('SnowLuma 已用独立控制台窗口启动（此模式下日志不进内置控制台）', 'stdout');
       return { ok: true, launched: true, embedded: false };
@@ -577,8 +575,7 @@ export function createApp({ log = console.log } = {}) {
   }
 
   const emit = (type, payload) => {
-    // 说明：这里曾经先走一个进程内事件总线（createEventBus），但全项目**没有任何订阅者**，
-    // 属于纯空转；更糟的是它给人"存在进程内订阅者"的错觉。真正的消费者只有 SSE。
+    if (!streams.clients.size) return;
     let line = null;
     if (type === 'session-update' && payload?.sessionId) {
       try {
@@ -612,15 +609,7 @@ export function createApp({ log = console.log } = {}) {
       } catch { /* 失败就退回原 payload */ }
     }
     if (!line) line = `event: ${type}\ndata: ${JSON.stringify(payload ?? {})}\n\n`;
-    for (const res of sseClients) {
-      // 同步异常 + 已经不可写的连接都要清理，否则集合只增不减、每次都白写
-      if (res.writableEnded || res.destroyed) { sseClients.delete(res); continue; }
-      try {
-        res.write(line);
-      } catch {
-        sseClients.delete(res);
-      }
-    }
+    streams.broadcast(line);
   };
 
   // ── 组件 ──
@@ -1151,47 +1140,12 @@ export function createApp({ log = console.log } = {}) {
     }
   }
 
-  // ── 来源校验（CSRF / DNS rebinding 防护）────────────────────────────────
-  // 服务只监听回环，但**浏览器里的任意网页都能向 127.0.0.1 发简单请求**，
-  // 而 CORS 只挡"读响应"、挡不住"副作用"（改配置、暂停、重置数据…）。
-  // 所以所有 /api/* 都必须来自回环 Host；带 Origin/Referer 时必须同源。
-  function isLoopbackHostHeader(host) {
-    return /^127\.0\.0\.1(:\d+)?$/.test(host)
-      || /^localhost(:\d+)?$/.test(host)
-      || /^\[::1\](:\d+)?$/.test(host);
-  }
-
-  function originAllowed(req) {
-    const host = String(req.headers.host ?? '');
-    if (!isLoopbackHostHeader(host)) return false;
-    const origin = String(req.headers.origin ?? '');
-    if (origin) {
-      try {
-        const u = new URL(origin);
-        return isLoopbackHostHeader(u.host) && u.host === host;
-      } catch { return false; }
-    }
-    const referer = String(req.headers.referer ?? '');
-    if (referer) {
-      try { return new URL(referer).host === host; } catch { return false; }
-    }
-    // 无来源信息（curl / 本机脚本 / 地址栏直达）—— 放行
-    return true;
-  }
-
-  function authorize(req) {
-    const token = String(getConfig().server?.token ?? '');
-    if (!token) return true;
-    const url = new URL(req.url, 'http://127.0.0.1');
-    return req.headers['x-console-token'] === token || url.searchParams.get('token') === token;
-  }
-
   // ── 配置脱敏 ────────────────────────────────────────────────────────────
   // 凡是字段名命中这些模式的，值一律替换为空串（保留"有/无"的 hasXxx 标记）。
   // 覆盖：apiKey / api_key / accessToken / httpAccessToken / token / secret / password / cookie …
   // ⚠️ cookie 必须在内：media-download 插件的 bilibiliCookie / douyinCookie
   //    是登录凭据，曾经 pattern 不认导致 /api/config 明文返回。
-  // ⚠️ server.token（控制台管理令牌）也在内：它只用于 x-console-token 校验，
+  // ⚠️ server.token（控制台管理令牌）也在内：它只用于身份验证，
   //    GET /api/config 没有任何理由把明文管理令牌回传给浏览器（2026-09-26 审查发现
   //    裸 "token" 键名不命中原 pattern，配置了 token 的实例会在每次打开设置页时泄露它）。
   const SECRET_KEY_PATTERN = /(apikey|api_key|accesstoken|access_token|communitykey|cookie|secret|password|privatekey|private_key|^token$)/i;
@@ -1248,25 +1202,6 @@ export function createApp({ log = console.log } = {}) {
     return out;
   }
 
-  // ── 明文密钥端点守卫 ────────────────────────────────────────────────────
-  /**
-   * 这是本地单机程序，控制台就在本机浏览器打开，「显示密钥」是用户自己的操作，
-   * 不该被禁用。真正的风险来自**外部网页**冒用浏览器读 127.0.0.1（CSRF /
-   * DNS rebinding）—— 所以防线是「校验请求来源」。
-   *
-   * ⚠️ 历史实现里有一句 `if (req.headers['x-console-token']) return true`：
-   *    只看"有没有这个头"、不看值，等于任何人加个头就能读明文密钥。
-   *    已删除 —— 来源校验交由 originAllowed() 统一负责。
-   */
-  function keyEndpointAllowed(req) {
-    const token = String(getConfig().server?.token ?? '');
-    if (token) {
-      const url = new URL(req.url, 'http://127.0.0.1');
-      if (req.headers['x-console-token'] === token || url.searchParams.get('token') === token) return true;
-    }
-    return originAllowed(req);
-  }
-
   /**
    * 提供商对象脱敏：去掉明文 apiKey，只留 hasKey。
    * upsertProvider / addModelsToProvider / removeModelFromProvider 的返回值都带
@@ -1284,8 +1219,8 @@ export function createApp({ log = console.log } = {}) {
     store, memory, sessions, onebot, orchestrator,
     emit, log,
     localVersion, compareSemver, UPDATE_INFO_URL,
-    sanitizeConfig, keyEndpointAllowed, sanitizeProvider,
-    readBody, authorize,
+    sanitizeConfig, keyEndpointAllowed: consoleAccess.authorized, sanitizeProvider,
+    readBody,
     snowlumaDir, snowlumaWsPort, snowlumaWebuiUrl, snowlumaWebuiPort, snowlumaStatus, snowlumaLogs,
     launchSnowluma, stopSnowluma,
     qqPortableStatus, qqPortableLogs, launchPortableQQ, stopPortableQQ,
@@ -1298,41 +1233,27 @@ export function createApp({ log = console.log } = {}) {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
 
+    const isApi = pathname.startsWith('/api/');
+    if (!consoleAccess.trustedRequest(req, isApi)) return json(res, 403, { error: '请求来源不被信任' });
+    // 浏览器在加载 HTML 时完成认证；同源 fetch 和原生 EventSource 复用凭据。
+    if (!consoleAccess.authorized(req)) {
+      res.setHeader('www-authenticate', `Basic realm="${CONSOLE_REALM}", charset="UTF-8"`);
+      return json(res, 401, { error: '请使用 admin 和控制台令牌登录' });
+    }
+
     // SSE
     if (pathname === '/api/events' && req.method === 'GET') {
-      if (!authorize(req)) return json(res, 401, { error: '未授权' });
-      if (!originAllowed(req)) return json(res, 403, { error: '请求来源不被信任' });
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
         connection: 'keep-alive'
       });
-      res.write(`event: hello\ndata: {}\n\n`);
-      sseClients.add(res);
-      // 心跳：半开 TCP（拔网线 / NAT 超时，没有 FIN）不会触发 req 'close'，
-      // 少了心跳这些客户端会永久留在 sseClients 里，之后每次 emit 都白写一遍。
-      const heartbeat = setInterval(() => {
-        try { res.write(': ping\n\n'); } catch { /* 下面 error/close 会清理 */ }
-      }, 15000);
-      heartbeat.unref?.();
-      const cleanup = () => {
-        clearInterval(heartbeat);
-        sseClients.delete(res);
-      };
-      // 异步写错误不会走 try/catch，必须显式兜住，否则会变成 uncaughtException
-      res.on('error', cleanup);
-      res.on('close', cleanup);
-      req.on('close', cleanup);
+      const connectedToken = consoleAccess.token();
+      streams.add(res, () => consoleAccess.token() === connectedToken);
       return;
     }
 
-    if (pathname.startsWith('/api/')) {
-      if (!authorize(req)) return json(res, 401, { error: '未授权' });
-      // 来源校验：挡住"恶意网页借浏览器打 127.0.0.1"（CSRF / DNS rebinding）。
-      // 必须在 authorize 之后、路由分发之前。
-      if (!originAllowed(req)) {
-        return json(res, 403, { error: '请求来源不被信任（仅接受本机控制台的同源请求）' });
-      }
+    if (isApi) {
       const method = req.method;
 
       // 声明式路由分发（路由表在 src/routes.js）
@@ -1448,7 +1369,7 @@ export function createApp({ log = console.log } = {}) {
   async function listenOn(port) {
     return new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(port, '127.0.0.1', () => {
+      server.listen(port, consoleAccess.host, () => {
         server.off('error', reject);
         resolve(port); // 必须把实际端口传回去，Electron 壳要用它加载页面
       });
@@ -1457,7 +1378,7 @@ export function createApp({ log = console.log } = {}) {
 
   async function start() {
     // 先开放 HTTP 控制台，再并行加载技能与启动 SnowLuma。
-    const basePort = Number(getConfig().server?.port) || 3210;
+    const basePort = Number(process.env.QQ_AGENT_PORT || getConfig().server?.port) || 3210;
     let port = null;
     let lastError = null;
     for (let p = basePort; p < basePort + 10; p++) {
@@ -1576,7 +1497,7 @@ export function createApp({ log = console.log } = {}) {
     }, 45_000).unref?.();
     if (getConfig().proactive?.enabled) orchestrator.startProactiveLoop();
     orchestrator.startReminderLoop();   // 提醒（闹钟）调度：到点往群里发提醒
-    log(`控制台已就绪：http://127.0.0.1:${port}`);
+    log(`控制台已就绪（监听 ${consoleAccess.host}，端口 ${port}）`);
     log(`OneBot（SnowLuma）: ws=${getConfig().snowluma?.wsUrl} http=${getConfig().snowluma?.httpUrl}`);
     log(`模型: ${getConfig().api.model || '（未设置，请在设置里选择）'} @ ${getConfig().api.baseUrl}`);
     return port;
@@ -1622,11 +1543,7 @@ export function createApp({ log = console.log } = {}) {
     // 索引缓存立刻落盘：正常运行中靠防抖（5s），退出前必须写一次，
     // 否则最后的会话变动丢失、下次启动要靠后台对账补（慢路径）
     sessions.flushIndexCache();
-    // 关闭所有 SSE 长连接，避免 server.close() 一直等它们
-    for (const c of [...sseClients]) {
-      try { c.end(); } catch { /* ignore */ }
-    }
-    sseClients.clear();
+    streams.close();
     onebot.close();
     server.close();
     // 内置启动的 SnowLuma：QQ Agent 退出时一并关掉，避免留一个无窗口的后台进程。
@@ -1641,7 +1558,7 @@ export function createApp({ log = console.log } = {}) {
     releaseInstanceLock();
   }
 
-  return { server, onebot, store, memory, stickers, sender, sessions, orchestrator, start, stop, emit, getConfig, updateConfig, launchSnowluma, stopSnowluma, snowlumaStatus, launchPortableQQ, stopPortableQQ, qqPortableStatus, reloadSkills };
+  return { server, getConsoleToken: consoleAccess.token, onebot, store, memory, stickers, sender, sessions, orchestrator, start, stop, emit, getConfig, updateConfig, launchSnowluma, stopSnowluma, snowlumaStatus, launchPortableQQ, stopPortableQQ, qqPortableStatus, reloadSkills };
 }
 
 /**

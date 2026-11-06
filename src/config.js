@@ -1,8 +1,10 @@
 // 配置管理：data/config.json，UI 可写。所有字段都有默认值。
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PERSONAS } from './personas.js';
+import { sameProviderEndpoint } from './provider-credentials.js';
 import { sliderToTier } from './tier-slider.js';   // 零依赖模块，避免循环依赖
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -365,7 +367,9 @@ export const DEFAULT_CONFIG = {
     // 端口：QQ_AGENT_PORT 显式覆盖 > 默认 3210 + PROFILE 偏移
     // （第二实例整体 +100，避免和主实例撞端口）
     port: Number(process.env.QQ_AGENT_PORT) || (3210 + portOffset()),
-    token: '',                // 留空 = 只监听 127.0.0.1
+    host: '127.0.0.1',
+    allowedOrigins: [],       // 反代对外的完整来源
+    token: '',                // 回环上留空会为本次启动生成随机令牌
     autoStart: false,         // 开机自启（仅 Electron 桌面端生效）
     closeToTray: true         // 点关闭 = 最小化到托盘
   },
@@ -412,6 +416,16 @@ function normalizeGlobalBlocklist(config) {
 }
 
 export function loadConfig() {
+  // 旧版在 Unix 上按默认 umask 创建配置，其他本机账户可能直接读出令牌。
+  // 权限错误必须让启动失败，不能按 JSON 损坏备份再用默认配置覆盖。
+  if (process.platform !== 'win32') {
+    try {
+      const info = fs.statSync(CONFIG_FILE);
+      if (info.mode & 0o077) fs.chmodSync(CONFIG_FILE, info.mode & 0o700);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
   try {
     let text = fs.readFileSync(CONFIG_FILE, 'utf8');
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
@@ -579,6 +593,14 @@ function stripDerivedFlags(node) {
  * 目前只有 webSearch.providers 一处数组密钥容器；新增容器时往数组里加路径即可。
  */
 function preserveSanitizedSecrets(current, patch) {
+  const providers = patch.providers?.__replace__ ?? patch.providers;
+  if (Array.isArray(providers)) {
+    for (const entry of providers) {
+      if (!entry?.id || entry.apiKey !== undefined) continue;
+      const old = current.providers?.find((p) => p.id === entry.id);
+      if (old?.apiKey && sameProviderEndpoint(old.baseURL, entry.baseURL)) entry.apiKey = old.apiKey;
+    }
+  }
   try {
     const cur = current?.webSearch?.providers;
     const next = patch?.webSearch?.providers;
@@ -589,7 +611,7 @@ function preserveSanitizedSecrets(current, patch) {
       // 完全没带（脱敏回传的常态）→ 从现配置同 id 条目回填现值。
       if (entry.apiKey !== undefined) continue;
       const stored = cur.find((p) => String(p?.id) === String(entry.id));
-      if (stored && String(stored.apiKey || '').trim()) {
+      if (stored && sameProviderEndpoint(stored.baseUrl, entry.baseUrl) && String(stored.apiKey || '').trim()) {
         entry.apiKey = stored.apiKey;         // 回填现值，等价于"该条目未动"
       }
     }
@@ -608,26 +630,59 @@ export function updateConfig(patch) {
   // 一次普通的设置保存就把所有自定义搜索服务的 Key 静默清空（表现为掩码消失、
   // 测试报 invalid API key）。这里在合并前把"patch 条目缺密钥字段"的数组按 id
   // 回填现值；想真清除必须显式传 apiKey: ''（专用清除按钮就是显式空串路径）。
-  preserveSanitizedSecrets(getConfig(), cleanObsolete);
-  currentConfig = normalizeGlobalBlocklist(deepMerge(getConfig(), cleanObsolete));
+  const previous = getConfig();
+  preserveSanitizedSecrets(previous, cleanObsolete);
+  const nextConfig = normalizeGlobalBlocklist(deepMerge(structuredClone(previous), cleanObsolete));
+  // 手动配置沿用旧 Key 只适用于同一端点。切换目标时必须显式输入新 Key。
+  const apiUrlChanged = previous.api?.baseUrl !== nextConfig.api?.baseUrl
+    && !sameProviderEndpoint(previous.api?.baseUrl, nextConfig.api?.baseUrl);
+  if (previous.api?.apiKey && nextConfig.api && cleanObsolete.api?.apiKey === undefined
+      && (previous.api.provider !== nextConfig.api.provider || apiUrlChanged)) {
+    nextConfig.api.apiKey = '';
+  }
+  for (const name of ['deepseek', 'zhipu', 'bocha', 'baidu', 'metaso', 'custom']) {
+    const changed = cleanObsolete.webSearch?.[name];
+    const next = nextConfig.webSearch?.[name];
+    if (changed?.baseUrl !== undefined && changed.apiKey === undefined && next?.apiKey
+        && !sameProviderEndpoint(previous.webSearch?.[name]?.baseUrl, next.baseUrl)) {
+      next.apiKey = '';
+    }
+  }
+  // 同一目录 id 可以被重新导入为另一个网关，不能把旧字典里的 Key 带过去。
+  if (cleanObsolete.providers && Array.isArray(nextConfig.providers)) {
+    const updatedKeys = cleanObsolete.dshProviderKeys?.__replace__ ?? cleanObsolete.dshProviderKeys ?? {};
+    for (const id of Object.keys(nextConfig.dshProviderKeys || {})) {
+      if (Object.hasOwn(updatedKeys, id)) continue;
+      const old = previous.providers?.find((p) => p.id === id);
+      const next = nextConfig.providers.find((p) => p.id === id);
+      if (!sameProviderEndpoint(old?.baseURL, next?.baseURL)) {
+        delete nextConfig.dshProviderKeys[id];
+      }
+    }
+  }
   // 磁盘上可能已经存过历史遗留的派生标记，一并清掉
-  stripDerivedFlags(currentConfig);
-  stripObsoleteFields(currentConfig);
+  stripDerivedFlags(nextConfig);
+  stripObsoleteFields(nextConfig);
 
   // ── 响应档位：以滑条位置为唯一真相，派生 tier 与随机概率 ──
   // 前端只负责上报滑条位置（contextSliderPos），档位和概率一律由这里换算。
   // 这样即使前端算错、或者有人直接调接口只传位置，配置也不会自相矛盾。
-  const posRaw = currentConfig?.store?.contextSliderPos;
+  const posRaw = nextConfig?.store?.contextSliderPos;
   if (posRaw !== undefined && posRaw !== null) {
     const { tier, randomPercent } = sliderToTier(posRaw);
-    currentConfig.store.contextTier = tier;
-    currentConfig.store.randomPercent = randomPercent;
+    nextConfig.store.contextTier = tier;
+    nextConfig.store.randomPercent = randomPercent;
   }
 
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = `${CONFIG_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(currentConfig, null, 2), 'utf8');
-  fs.renameSync(tmp, CONFIG_FILE);
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  const tmp = `${CONFIG_FILE}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(nextConfig, null, 2), { flag: 'wx', mode: 0o600 });
+    fs.renameSync(tmp, CONFIG_FILE);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+  currentConfig = nextConfig;
   return currentConfig;
 }
 

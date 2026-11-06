@@ -12,7 +12,7 @@ import { getConfig, storeConfigForChat, personaForChat } from './config.js';
 import { vendorOfConfig } from './model-prices.js';
 import { randInt } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, resolveContextTier } from './prompt.js';
-import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from './llm.js';
+import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError, resolveApiKey } from './llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from './tools.js';
 import { modelImageVerdict } from './vision-scan.js';
 import { currentProviders } from './providers.js';
@@ -693,15 +693,9 @@ export class Orchestrator {
 
   /** 给"正文裁判"用的模型参数：沿用当前聊天的主模型，不另开一份配置。 */
   #judgeApi() {
-    const api = getConfig().api || {};
-    // 密钥解析：模型走 providers 目录时顶层 api.apiKey 常为空 —— 直接取会 401。
-    // 从已解析密钥的目录里找当前 provider 的真实 Key（与主调用路径同源）。
-    let apiKey = api.apiKey;
-    if (!apiKey && api.provider) {
-      const p = currentProviders().find((x) => x.id === api.provider);
-      apiKey = p?.apiKey || '';
-    }
-    return { baseUrl: api.baseUrl, apiKey, model: api.model, provider: api.provider };
+    const cfg = getConfig();
+    const { baseUrl, model, provider } = cfg.api;
+    return { baseUrl, model, provider, apiKey: resolveApiKey(cfg) };
   }
 
   /** 触发批的文本（裁判要知道"这轮收到了什么"，才能判断正文是对它的回复）。 */

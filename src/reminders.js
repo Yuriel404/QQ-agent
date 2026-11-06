@@ -69,10 +69,10 @@ export class ReminderStore {
     return true;
   }
 
-  /** 取消一条提醒（按 id）。返回是否取消成功。 */
-  cancel(id) {
+  /** 从指定会话取消提醒。管理端可省略 chatKey。 */
+  cancel(id, chatKey = null) {
     const before = this.reminders.length;
-    this.reminders = this.reminders.filter((x) => x.id !== id);
+    this.reminders = this.reminders.filter((x) => x.id !== id || (chatKey !== null && x.chatKey !== chatKey));
     if (this.reminders.length < before) {
       save(this.reminders);
       return true;

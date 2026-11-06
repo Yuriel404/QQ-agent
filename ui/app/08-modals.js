@@ -285,7 +285,7 @@ function openModelConfigModal() {
           <input type="text" id="mc-baseurl" readonly value="${esc(c.api?.baseUrl || '')}" /></div>
         <div class="field"><label>当前 API Key</label>
           <div style="display:flex;gap:8px">
-            <input type="password" id="mc-apikey" value="${esc((currentProvider?.hasKey || c.api?.apiKey) ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
+            <input type="password" id="mc-apikey" value="${(currentProvider?.hasKey || (!c.api?.provider && c.api?.hasApiKey)) ? '******' : ''}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
             <button class="btn btn-small" id="mc-apikey-toggle" type="button">显示</button>
             <button class="btn btn-small btn-danger" id="mc-apikey-clear" type="button" title="清除已保存的 API Key（留空保存并不会清除，必须点这个按钮）">清除</button>
           </div></div>
@@ -339,6 +339,20 @@ function openModelConfigModal() {
     btn.textContent = '扫描图片能力';
   });
 
+  let selectedProviderId = c.api?.provider || '';
+  const keyInput = overlay.querySelector('#mc-apikey');
+  let keyEdited = false;
+  let keyRevision = 0;
+  keyInput.addEventListener('input', () => { keyEdited = true; keyRevision++; });
+
+  function resetKeyField(hasKey) {
+    keyEdited = false;
+    keyRevision++;
+    keyInput.type = 'password';
+    keyInput.value = hasKey ? '******' : '';
+    overlay.querySelector('#mc-apikey-toggle').textContent = '显示';
+  }
+
   // 模型选择：复用主模型选择器语义，但选完只写本弹窗的表单（不立即 POST）
   overlay.querySelector('#mc-model-pick').addEventListener('click', () => {
     const providers = state.providers || [];
@@ -352,7 +366,7 @@ function openModelConfigModal() {
     });
     const pl = pickOverlay.querySelector('#mcp-left');
     const pr = pickOverlay.querySelector('#mcp-right');
-    let activePid = c.api?.provider || providers[0].id;
+    let activePid = selectedProviderId || providers[0].id;
     const renderLeft = () => {
       pl.innerHTML = providers.map((p) =>
         `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(p.displayName || p.id)}</div>`).join('');
@@ -368,6 +382,8 @@ function openModelConfigModal() {
           <span class="muted" style="font-size:11px">${esc(m)}</span>
         </div>`).join('') || '<div class="muted" style="padding:10px">该提供商下没有模型</div>';
       pr.querySelectorAll('.mm-model').forEach((el) => el.addEventListener('click', () => {
+        if (selectedProviderId !== activePid) resetKeyField(p.hasKey);
+        selectedProviderId = activePid;
         overlay.querySelector('#mc-model-pick').value = (names[el.dataset.model] || el.dataset.model);
         overlay.querySelector('#mc-picked').value = `${activePid}|||${el.dataset.model}`;
         overlay.querySelector('#mc-baseurl').value = p.baseURL || '';
@@ -436,40 +452,36 @@ function openModelConfigModal() {
 
   // Key 显示/清除：与主页面同款（fetchRealKey 走 /api/providers/key）
   overlay.querySelector('#mc-apikey-toggle').addEventListener('click', async () => {
-    const input = overlay.querySelector('#mc-apikey');
     const btn = overlay.querySelector('#mc-apikey-toggle');
-    const show = input.type === 'password';
-    if (show) {
+    const show = keyInput.type === 'password';
+    if (show && !keyEdited) {
+      const revision = ++keyRevision;
       try {
-        const pid = c.api?.provider;
+        const pid = selectedProviderId;
         const r = pid ? await api(`/api/providers/key?providerId=${encodeURIComponent(pid)}`) : await api('/api/api-key');
-        input.type = 'text';
-        input.value = String(r.apiKey || '（无）');
-        btn.textContent = '隐藏';
-      } catch (e) { alert(`读取密钥失败：${e.message}`); }
-    } else {
-      input.type = 'password';
-      input.value = '******';
-      btn.textContent = '显示';
+        if (revision !== keyRevision) return;
+        keyInput.value = String(r.apiKey || '');
+      } catch (e) { alert(`读取密钥失败：${e.message}`); return; }
     }
+    if (!show && !keyEdited && keyInput.value) keyInput.value = '******';
+    keyInput.type = show ? 'text' : 'password';
+    btn.textContent = show ? '隐藏' : '显示';
   });
   overlay.querySelector('#mc-apikey-clear').addEventListener('click', async () => {
-    if (!(await uiConfirm('确定清除已保存的 API Key？'))) return;
+    const pid = selectedProviderId;
+    if (!(await uiConfirm('确定清除已保存的 API Key？')) || pid !== selectedProviderId) return;
     try {
-      const pid = c.api?.provider;
       if (pid) {
         await api('/api/providers/set-key', { method: 'POST', body: JSON.stringify({ providerId: pid, apiKey: '' }) });
       } else {
         await api('/api/config', { method: 'POST', body: JSON.stringify({ api: { apiKey: '' } }) });
       }
-      const input = overlay.querySelector('#mc-apikey');
-      input.value = '';
-      input.placeholder = '输入新 Key 可替换';
+      if (pid === selectedProviderId) resetKeyField(false);
       await loadSettings();
     } catch (e) { alert(`清除失败：${e.message}`); }
   });
 
-  // 连通性测试：与主页面 runConnectivityTest 同款逻辑（读弹窗里的表单值）
+  // 测试当前选择；只发送为该提供商实际输入的密钥。
   overlay.querySelector('#mc-test-btn').addEventListener('click', async () => {
     const btn = overlay.querySelector('#mc-test-btn');
     const out = overlay.querySelector('#mc-test-result');
@@ -479,12 +491,10 @@ function openModelConfigModal() {
     try {
       const picked = overlay.querySelector('#mc-picked').value;
       const model = picked ? picked.split('|||')[1] : (c.api?.model || '');
-      const keyInput = overlay.querySelector('#mc-apikey');
-      const raw = (keyInput.value || '').trim();
-      const apiKey = (raw && raw !== '******') ? raw : '';
+      const apiKey = keyEdited ? keyInput.value.trim() : '';
       const r = await api('/api/providers/test-chat', {
         method: 'POST',
-        body: JSON.stringify({ baseUrl: overlay.querySelector('#mc-baseurl').value.trim(), apiKey, model })
+        body: JSON.stringify({ providerId: selectedProviderId, baseUrl: overlay.querySelector('#mc-baseurl').value.trim(), apiKey, model })
       });
       const res = r.result || {};
       out.textContent = res.ok ? `✓ 测试通过（${res.latencyMs}ms）` : `✗ ${res.note || '测试失败'}`;
@@ -518,10 +528,14 @@ function openModelConfigModal() {
     if (vEl.dataset.model !== undefined || vEl.value === '') patch.visionModel = vEl.dataset.model || '';
     if (dEl.dataset.model !== undefined || dEl.value === '') patch.videoModel = dEl.dataset.model || '';
     // Key：只在用户输入了非掩码明文时才回传（掩码/留空 = 保持）
-    const raw = (overlay.querySelector('#mc-apikey').value || '').trim();
-    if (raw && raw !== '******') patch.apiKey = raw;
+    const raw = keyEdited ? keyInput.value.trim() : '';
+    const configPatch = { api: patch };
+    if (raw && raw !== '******') {
+      if (selectedProviderId) configPatch.dshProviderKeys = { [selectedProviderId]: raw };
+      else patch.apiKey = raw;
+    }
     try {
-      await api('/api/config', { method: 'POST', body: JSON.stringify({ api: patch }) });
+      await api('/api/config', { method: 'POST', body: JSON.stringify(configPatch) });
       closeModelModal(overlay);
       loadSettings();
     } catch (e) {
@@ -587,7 +601,7 @@ function openModelPicker() {
           ? (pid === oldProvider ? model : '')
           : oldVideo;
         try {
-          // 只更新 provider/model/baseUrl；apiKey 保持当前已保存值，不把密钥回写到接口请求里
+          // 只更新选择；后端从目标提供商读取已保存的密钥。
           await api('/api/config', {
             method: 'POST',
             body: JSON.stringify({ api: { provider: pid, model, baseUrl: p.baseURL, ...(visionModel !== oldVision ? { visionModel } : {}), ...(videoModel !== oldVideo ? { videoModel } : {}) } })

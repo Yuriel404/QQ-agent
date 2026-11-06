@@ -298,6 +298,10 @@ refs:
   const { createApp } = await import('../src/app.js');
   const app = createApp({ log: () => {} });
   await app.start();
+  const consoleFetch = (path, options = {}) => globalThis.fetch(
+    `http://127.0.0.1:${cfg.server.port}${path}`,
+    { ...options, headers: { 'x-console-token': app.getConsoleToken(), ...options.headers } }
+  );
 
   // 同步原语
   const waitSessionDone = async (triggerSubstring, timeout = 9000) => {
@@ -470,7 +474,7 @@ refs:
   pass('表情包发送：image 段 + 存档记录');
 
   // ── 场景 7：限频保护 ──
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ send: { maxPerMinute: 1, minGapMs: 5, maxGapMs: 10, byLengthMs: 0, maxPerHour: 1000, hardSplitAt: 4000 } })
   });
@@ -498,21 +502,21 @@ refs:
   );
   pass('发送限频：超额部分被拒绝，失败情况（含条数定位）回传模型');
   // 恢复限频配置
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ send: { maxPerMinute: 100 } })
   });
 
   // ── 场景 8：暂停开关 + 手动唤醒 ──
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/pause`, { method: 'POST', body: JSON.stringify({ paused: true }) });
+  await consoleFetch(`/api/pause`, { method: 'POST', body: JSON.stringify({ paused: true }) });
   const callsBeforePause = llm.state.requests.length;
   pushGroupMsg(111, '张三', '暂停期间的消息', 9008);
   await sleep(900);
   assert.strictEqual(llm.state.requests.length, callsBeforePause, '暂停期间不触发运行');
   assert.ok(app.store.getChatMeta('group:456').unread >= 1, '暂停期间消息仍入档为未读');
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/pause`, { method: 'POST', body: JSON.stringify({ paused: false }) });
+  await consoleFetch(`/api/pause`, { method: 'POST', body: JSON.stringify({ paused: false }) });
   llm.state.script.push({ content: '（恢复后检查一遍，不用回）' }); // 显式脚本，保证后续索引不漂移
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/chats/group_456/wake`, { method: 'POST', body: '{}' });
+  await consoleFetch(`/api/chats/group_456/wake`, { method: 'POST', body: '{}' });
   await waitSessionDone('暂停期间的消息');
   pass('暂停/恢复 + 手动唤醒（暂停期间消息积压为未读）');
 
@@ -626,7 +630,7 @@ refs:
 
   // ── 场景 14：图片输入链路（vision） ──
   // 14a. 图片作为图像输入到达模型：tool 消息带文本，图片以 user 消息(image_url)补发
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ security: { allowPrivateImageHosts: true } }) // 测试例外：允许下载 mock 服务器上的本地图
   });
@@ -657,7 +661,7 @@ refs:
   pass('图片输入：tool 文本 + user 消息 image_url 补发，结构兼容 OpenAI 校验');
 
   // 14b. vision=false 时看图工具被移除、搜索工具保留
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ api: { vision: false } })
   });
@@ -667,25 +671,25 @@ refs:
   const visOffReq = llm.state.requests.at(-1);
   assert.ok(!visOffReq.tools.some((t) => t.function.name === 'get_message_images'), 'vision=false 时看图工具被移除');
   assert.ok(visOffReq.tools.some((t) => t.function.name === 'web_search'), '搜索工具不受影响');
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ api: { vision: true }, security: { allowPrivateImageHosts: false } })
   });
   pass('vision 开关：关闭后移除看图工具，提示词同步变化');
 
   // ── 场景 15：群/好友列表 + 手动测试消息 ──
-  const groupsRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/onebot/groups`)).json();
+  const groupsRes = await (await consoleFetch(`/api/onebot/groups`)).json();
   assert.ok(groupsRes.groups.some((g) => g.id === '456' && g.name === '审计群456'), '群列表可供白名单勾选');
-  const friendsRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/onebot/friends`)).json();
+  const friendsRes = await (await consoleFetch(`/api/onebot/friends`)).json();
   assert.ok(friendsRes.friends.some((f) => f.id === '777'), '好友列表可供白名单勾选');
-  const testSendRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/chats/group_456/test-send`, {
+  const testSendRes = await (await consoleFetch(`/api/chats/group_456/test-send`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ text: '手动测试消息' })
   })).json();
   assert.ok(testSendRes.ok, '测试消息发送成功');
   assert.ok(onebotHttp.state.sends.some((s) => s.body.message.at(-1).data.text === '手动测试消息'), '测试消息到达 OneBot');
   assert.ok(app.store.recent('group:456', { limit: 5 }).some((m) => m.self && m.text === '手动测试消息'), '测试消息入档为自己的发言');
-  const tplRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/persona-templates`)).json();
+  const tplRes = await (await consoleFetch('/api/persona-templates')).json();
   assert.ok(tplRes.templates.some((t) => t.id === 'xiaojingyu' && t.text.includes('DeepSeek 小鲸鱼')), '原版小鲸鱼人设模板在内');
   pass('引导助手：群/好友列表 + 手动测试消息 + 人设模板');
 
@@ -696,7 +700,7 @@ refs:
 
   // ── 场景 17：手动模型目录（添加提供商 + 模型管理 + 切换） ──
   // 通过新 API 手动添加两个提供商（等价于设置页“确认添加”），再验证模型追加/删除/切换。
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers`, {
+  await consoleFetch(`/api/providers`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       baseUrl: 'https://api.a6api.com/v1',
@@ -707,7 +711,7 @@ refs:
       ]
     })
   });
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers`, {
+  await consoleFetch(`/api/providers`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       baseUrl: 'http://127.0.0.1:8787/v1',
@@ -715,7 +719,7 @@ refs:
       models: [{ id: 'hy4-preview', name: '混元 Preview' }]
     })
   });
-  const provRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers`)).json();
+  const provRes = await (await consoleFetch(`/api/providers`)).json();
   assert.strictEqual(provRes.providers.length, 2, `应存在 2 个手动添加的提供商（实际 ${provRes.providers.length}）`);
   const a6 = provRes.providers.find((p) => p.baseURL === 'https://api.a6api.com/v1');
   assert.ok(a6 && a6.hasKey && a6.apiKey === '', 'API 不返回明文 Key，但 hasKey 标记为 true');
@@ -723,51 +727,51 @@ refs:
   const local = provRes.providers.find((p) => p.baseURL === 'http://127.0.0.1:8787/v1');
   assert.ok(local && local.models.includes('hy4-preview'), '本地网关模型已添加');
   // 追加模型
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers/models`, {
+  await consoleFetch(`/api/providers/models`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ providerId: local.id, models: [{ id: 'glm-5.3-flash', name: 'GLM 5.3 Flash' }] })
   });
-  const provRes2 = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers`)).json();
+  const provRes2 = await (await consoleFetch(`/api/providers`)).json();
   const local2 = provRes2.providers.find((p) => p.id === local.id);
   assert.ok(local2.models.includes('glm-5.3-flash'), '追加模型成功');
   // 切换到目录里的模型（等价于 UI 选中后的字段填充）
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ api: { provider: local.id, baseUrl: 'http://127.0.0.1:8787/v1', apiKey: 'local-key-1', model: 'hy4-preview' } })
   });
-  const cfgAfter = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`)).json();
+  const cfgAfter = await (await consoleFetch(`/api/config`)).json();
   assert.strictEqual(cfgAfter.api.provider, local.id);
   assert.strictEqual(cfgAfter.api.model, 'hy4-preview');
   // 删除模型
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers/models`, {
+  await consoleFetch(`/api/providers/models`, {
     method: 'DELETE', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ providerId: local.id, modelId: 'glm-5.3-flash' })
   });
-  const provRes3 = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers`)).json();
+  const provRes3 = await (await consoleFetch(`/api/providers`)).json();
   const local3 = provRes3.providers.find((p) => p.id === local.id);
   assert.ok(!local3.models.includes('glm-5.3-flash'), '删除模型成功');
   // 切回测试模型，保证后续场景正常
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ api: { provider: '', baseUrl: `http://127.0.0.1:${PORTS.llm}/v1`, apiKey: 'test-key', model: 'test-model-a' } })
   });
   pass('手动模型目录：添加提供商 + 追加/删除模型 + 切换');
 
   // ── 场景 11：HTTP API 完整性 ──
-  const statusRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/status`)).json();
+  const statusRes = await (await consoleFetch(`/api/status`)).json();
   assert.ok(statusRes.onebot.connected === true);
   assert.ok(statusRes.usage.totalTokens > 0, '今日 token 统计 > 0');
   // cost 字段已移除（估算金额依赖单价配置，实际恒为 0，不展示）
   assert.ok(statusRes.usage.cost === undefined, '成本估算字段已移除');
-  const modelsRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/models`)).json();
+  const modelsRes = await (await consoleFetch(`/api/models`)).json();
   assert.strictEqual(modelsRes.models.length, 2, '模型列表 API');
-  const sessRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/sessions`)).json();
+  const sessRes = await (await consoleFetch(`/api/sessions`)).json();
   assert.ok(sessRes.sessions.length >= 8, `会话列表有记录（${sessRes.sessions.length}）`);
-  const oneSession = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/sessions/${sessRes.sessions[0].id}`)).json();
+  const oneSession = await (await consoleFetch(`/api/sessions/${sessRes.sessions[0].id}`)).json();
   assert.ok(oneSession.messages && oneSession.systemPrompt);
-  const chatsRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/chats`)).json();
+  const chatsRes = await (await consoleFetch(`/api/chats`)).json();
   assert.ok(chatsRes.chats.some((c) => c.key === 'group:456'));
-  const uiRes = await fetch(`http://127.0.0.1:${cfg.server.port}/`);
+  const uiRes = await consoleFetch(`/`);
   assert.ok((await uiRes.text()).includes('QQ Agent'), 'UI 首页可访问');
   pass('HTTP API：status/models/sessions/chats/UI 全部可用', `今日 ${statusRes.usage.totalTokens} tok`);
 
@@ -786,7 +790,7 @@ refs:
     // 111 也会被整理，补一条脚本，避免它吃到"默认：无动作"而产生解析噪音
     { content: JSON.stringify({ impressions: ['合并后的综合印象（111）'] }) }
   );
-  const consResp = await fetch(`http://127.0.0.1:${cfg.server.port}/api/memory-files/consolidate`, {
+  const consResp = await consoleFetch(`/api/memory-files/consolidate`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ chatKey: 'group:456' })
   });
@@ -820,7 +824,7 @@ refs:
 
   // ── 场景 27：模型图片输入探测 + 按模型门控看图工具 ──
   // 先通过手动添加提供商 API 创建视觉探测专用提供商（baseUrl 指向 mock LLM）
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers`, {
+  await consoleFetch(`/api/providers`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       baseUrl: `http://127.0.0.1:${PORTS.llm}/v1`,
@@ -831,15 +835,15 @@ refs:
       ]
     })
   });
-  const visionProv = (await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/providers`)).json())
+  const visionProv = (await (await consoleFetch(`/api/providers`)).json())
     .providers.find((p) => p.baseURL === `http://127.0.0.1:${PORTS.llm}/v1`);
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/vision/scan`, {
+  await consoleFetch(`/api/vision/scan`, {
     method: 'POST', body: JSON.stringify({ providerIds: [visionProv.id] })
   });
   let visionRes = null;
   for (let i = 0; i < 40; i++) {
     await sleep(400);
-    visionRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/vision/results`)).json();
+    visionRes = await (await consoleFetch(`/api/vision/results`)).json();
     if (!visionRes.scanning
       && visionRes.results[`${visionProv.id}|||vision-ok-model`]
       && visionRes.results[`${visionProv.id}|||vision-no-model`]) break;
@@ -850,7 +854,7 @@ refs:
 
   // 场景 26 之后模型目录多了视觉测试提供商（vision-ok/no），原 chat 模型仍可用
   // 切到无视觉模型：请求里不应再有看图工具
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST',
     body: JSON.stringify({ api: { provider: visionProv.id, model: 'vision-no-model', baseUrl: `http://127.0.0.1:${PORTS.llm}/v1`, apiKey: 'cred-visiontest-key' } })
   });
@@ -861,7 +865,7 @@ refs:
   assert.ok(!noVisionReq.tools?.some((t) => t.function?.name === 'get_message_images'), 'no-vision 模型不带看图工具');
 
   // 切到视觉模型：看图工具恢复
-  await fetch(`http://127.0.0.1:${cfg.server.port}/api/config`, {
+  await consoleFetch(`/api/config`, {
     method: 'POST',
     body: JSON.stringify({ api: { provider: visionProv.id, model: 'vision-ok-model' } })
   });
@@ -1113,14 +1117,14 @@ refs:
     const { setRuntimeConfig, getConfig } = await import('../src/config.js');
 
     // 群名：/api/chats 每个条目都带 chatName 字段（拿不到时为空串）
-    const cRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/chats`)).json();
+    const cRes = await (await consoleFetch(`/api/chats`)).json();
     const cl = cRes.chats || [];
     assert.ok(cl.length > 0, '应有存档会话');
     assert.ok(cl.every((c) => 'chatName' in c), '每个 chat 都应有 chatName 字段');
 
     // 存档倒序：稳定排序后反转，不应出现时间倒挂
     const key0 = cl[0].key;
-    const mRes = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/chats/${key0.replace(':', '_')}/messages?limit=100000`)).json();
+    const mRes = await (await consoleFetch(`/api/chats/${key0.replace(':', '_')}/messages?limit=100000`)).json();
     const msgs = mRes.messages || [];
     if (msgs.length > 1) {
       const sorted = msgs.slice().sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
@@ -1153,7 +1157,7 @@ refs:
   {
     const get = async (path) => {
       const t0 = Date.now();
-      const r = await (await fetch(`http://127.0.0.1:${cfg.server.port}${path}`)).json();
+      const r = await (await consoleFetch(path)).json();
       return { r, ms: Date.now() - t0 };
     };
 
@@ -1268,7 +1272,7 @@ refs:
 
   // ── 场景 34：搜索次数 + 工具调用明细（次数不进成本）──
   {
-    const get = async (path) => (await (await fetch(`http://127.0.0.1:${cfg.server.port}${path}`)).json());
+    const get = async (path) => (await (await consoleFetch(path)).json());
 
     const all = await get('/api/usage/stats?range=all');
     assert.ok('searchCount' in all, 'stats 应含 searchCount 字段');
@@ -1361,10 +1365,10 @@ refs:
     setPriceFeedTestUrl('');
 
     // ⑤ 接口：/api/model-prices 必须带 remote 状态；/api/model-prices/refresh 必须存在（不能 404）
-    const get = async (p) => (await (await fetch(`http://127.0.0.1:${cfg.server.port}${p}`)).json());
+    const get = async (p) => (await (await consoleFetch(p)).json());
     const mp = await get('/api/model-prices');
     assert.ok(mp.remote && typeof mp.remote.enabled === 'boolean', 'model-prices 应带 remote 状态');
-    const rr = await (await fetch(`http://127.0.0.1:${cfg.server.port}/api/model-prices/refresh`, { method: 'POST' })).json();
+    const rr = await (await consoleFetch(`/api/model-prices/refresh`, { method: 'POST' })).json();
     assert.ok(rr.remote, 'refresh 接口应返回 remote 状态（固定官网 URL）');
     assert.equal(rr.remote.enabled, true, '生产价格表地址固定，刷新接口应保持启用');
     assert.equal(rr.remote.url, 'https://kondius.cn/qq-agent/model-prices.json', '价格表 URL 必须固定为官网地址（https，防 MITM 篡改成本展示）');

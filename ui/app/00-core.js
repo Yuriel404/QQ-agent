@@ -554,8 +554,6 @@ const USAGE_RANGES = [
   ['all', '全部']
 ];
 
-const CONSOLE_MARKER = 'qq-agent-console';
-
 /* ══════════════════════════════════════════════════════════════
    主题（明/暗）—— 「跟随系统」「？」已移除
    ══════════════════════════════════════════════════════════════ */
@@ -603,7 +601,6 @@ async function api(path, options = {}) {
   const res = await fetch(path, {
     headers: {
       'content-type': 'application/json',
-      'x-console-token': CONSOLE_MARKER,
       ...(rest.headers || {})
     },
     ...rest,

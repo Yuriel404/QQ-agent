@@ -595,9 +595,7 @@ function bindSettingsEvents(c) {
     const field = SEARCH_KEY_FIELDS[inputId]?.();
     if (field) {
       const r = await api(`/api/search-key?field=${encodeURIComponent(field)}`);
-      // 环境变量提供的 Key：配置里没存（apiKey 空）但 env 有 —— 显示时
-      // 直接把 env 值亮出来（web-search.js 的运行时优先级就是 cfg > env，
-      // 用户"看一眼"的语义应该覆盖两种来源）。
+      // 专用端点只返回控制台保存的密钥，环境变量的值始终留在服务端。
       return String(r.apiKey || '');
     }
     // OneBot 令牌：与搜索 Key 同样的"显示明文"专用端点
@@ -707,27 +705,17 @@ function bindSettingsEvents(c) {
   // 2026-09-19（M9 清理）：唯一调用点已随「模型配置」弹窗改版删除（弹窗内自带取 Key
   // 逻辑），此函数成为死代码且引用不存在的 #cfg-apikey —— 一并删除。
 
-  // 连通性测试：抽成公共逻辑，两个入口共用
-  // （健康卡片的 test-api-btn 与「模型配置」弹窗里的测试按钮做的是同一件事）
+  // 健康卡片只测试已保存的设置，密钥由服务端按端点解析。
   async function runConnectivityTest(btn, out, idleLabel) {
     if (!btn) return;
     btn.disabled = true;
     btn.textContent = '测试中…';
     if (out) out.textContent = '';
     try {
-      // 2026-09-18 模型配置改版后，设置页上只剩隐藏字段（cfg-baseurl-value），
-      // 旧的 #cfg-baseurl / #cfg-apikey 输入框已搬进弹窗（mc-*）。这里按
-      // 「界面实时值优先、隐藏字段兜底、最后用已保存配置」的顺序取值 ——
-      // 否则健康卡片上的「测试一下」永远拿空 baseUrl，必报"请先填写 Base URL"。
-      const baseUrl = ($('#mc-baseurl')?.value || $('#cfg-baseurl-value')?.value || state.config?.api?.baseUrl || '').trim();
-      const model = ($('#mc-model-pick')?.dataset?.model || $('#cfg-model')?.value || state.config?.api?.model || '').trim();
-      // 只把"用户新输入的明文 Key"传给服务端；若是掩码/空则不传，
-      // 让服务端用自己保存的 Key —— 不依赖明文读取端点，未设 token 时也能测试。
-      const raw = ($('#mc-apikey')?.value || '').trim();
-      const apiKey = (raw && raw !== '******') ? raw : '';
+      const { provider: providerId, baseUrl, model } = state.config?.api || {};
       const r = await api('/api/providers/test-chat', {
         method: 'POST',
-        body: JSON.stringify({ baseUrl, apiKey, model })
+        body: JSON.stringify({ providerId, baseUrl, model })
       });
       const res = r.result || {};
       // 思考方言由服务端 model.thinking-detect 能力给出，让用户提前知道这个模型

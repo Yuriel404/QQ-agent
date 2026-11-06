@@ -54,7 +54,7 @@ window.EventTarget.prototype.addEventListener = function (type, ...rest) {
   return origAdd.call(this, type, ...rest);
 };
 
-window.fetch = (input, init) => fetch(new URL(String(input), base).href, init);
+window.fetch = ctx.consoleFetch;
 window.EventSource = class { constructor() {} addEventListener() {} close() {} };
 window.alert = () => {};
 window.confirm = () => true;

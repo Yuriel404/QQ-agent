@@ -77,7 +77,7 @@ const realFetch = async (url, opt = {}) => {
   const u = new URL(url, 'http://127.0.0.1:' + port);
   return new Promise((res, rej) => {
     const rq = http.request({ host: '127.0.0.1', port, path: u.pathname + u.search, method: opt.method || 'GET',
-      headers: { 'content-type': 'application/json', 'x-console-token': 'qq-agent-console', ...(opt.headers || {}) } },
+      headers: { 'content-type': 'application/json', 'x-console-token': app.getConsoleToken(), ...(opt.headers || {}) } },
       (r) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => res({ ok: r.statusCode < 400, status: r.statusCode, json: async () => JSON.parse(d || '{}') })); });
     rq.on('error', rej);
     if (opt.body) rq.write(opt.body);

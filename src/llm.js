@@ -1,6 +1,7 @@
 // OpenAI 兼容 Chat Completions 客户端（非流式）。
 // 支持工具调用、usage 统计、可自选模型 —— 这是与 DSH 解耦后的"大脑"接口。
 import { getConfig } from './config.js';
+import { providerKeyValue, resolveProviderRequest, sameProviderEndpoint } from './provider-credentials.js';
 import { resolveModelPrice, priceAt } from './model-prices.js';
 import { skillManager } from './skills/manager.js';
 import {
@@ -32,30 +33,9 @@ function getOpencodeSessionId() {
   return opencodeSessionId;
 }
 
-/**
- * 解析当前 api 配置里真正该用的 API Key。
- *
- * 优先级：**当前选中的目录提供商的 Key > 顶层 api.apiKey**。
- *
- * 注意顺序很重要：api.apiKey 是手动模式遗留字段，一旦用户在 UI 里选了某个
- * 目录提供商，就该用它对应的 Key。否则会出现「选了 openrouter，却拿着 a6api 的
- * Key 去请求 openrouter.ai」的情况 —— 表现为全部会话 401 Missing Authentication。
- *
- * 兼容历史数据：providers[].apiKey 也可能存有明文（老配置），也认 ——
- * 但优先级与 providers.providerKeyValue 保持一致（dshProviderKeys 优先），
- * 保证"聊天用的 key"与"目录/测试连通性用的 key"永远是同一把。
- */
+/** 解析当前已保存端点的 Key，兼容旧目录内的明文 Key。 */
 export function resolveApiKey(cfg) {
-  const pid = String(cfg?.api?.provider ?? '').trim();
-  if (pid) {
-    const fromDsh = String(cfg?.dshProviderKeys?.[pid] ?? '').trim();
-    if (fromDsh && fromDsh !== '******') return fromDsh;
-    const p = (cfg?.providers || []).find((x) => x.id === pid);
-    const legacy = String(p?.apiKey ?? '').trim();
-    if (legacy && legacy !== '******') return legacy;
-  }
-  const direct = String(cfg?.api?.apiKey ?? '').trim();
-  return direct === '******' ? '' : direct;
+  return resolveProviderRequest(cfg, { baseUrl: cfg.api?.baseUrl }).apiKey;
 }
 
 /** 返回一个 key 已解析好的 api 配置（不影响配置本体）。 */
@@ -117,8 +97,7 @@ function resolveProviderEndpoint(providerId) {
   if (!pid) return null;
   const p = (cfg.providers || []).find((x) => x.id === pid);
   if (!p || !String(p.baseURL ?? '').trim()) return null;
-  const key = String(cfg.dshProviderKeys?.[pid] ?? p.apiKey ?? '').trim();
-  return { baseUrl: String(p.baseURL).trim(), apiKey: key === '******' ? '' : key };
+  return { baseUrl: String(p.baseURL).trim(), apiKey: providerKeyValue(p, cfg) };
 }
 
 /**
@@ -283,7 +262,7 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
           api = {
             ...baseApi,
             baseUrl: picked.baseUrl,
-            apiKey: picked.apiKey || baseApi.apiKey,
+            apiKey: picked.apiKey || (sameProviderEndpoint(picked.baseUrl, baseApi.baseUrl) ? baseApi.apiKey : ''),
             model: picked.model || baseApi.model
           };
         }
@@ -371,6 +350,7 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
   /** 发一次请求。返回 { ok, status, text, headers }，网络层错误直接抛。 */
   const post = async (body) => {
     const res = await fetch(joinUrl(api.baseUrl, '/chat/completions'), {
+      redirect: api.apiKey ? 'error' : 'follow',
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeaders(api.apiKey, api.baseUrl, api.model) },
       body: JSON.stringify(body),
@@ -586,6 +566,7 @@ async function withoutRejectedParams(body, errorText, ctx, status = 400) {
 export async function listModels() {
   const cfg = effectiveApi();
   const res = await fetch(joinUrl(cfg.baseUrl, '/models'), {
+    redirect: cfg.apiKey ? 'error' : 'follow',
     headers: authHeaders(cfg.apiKey, cfg.baseUrl),
     signal: AbortSignal.timeout(15000)
   });

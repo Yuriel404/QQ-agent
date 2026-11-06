@@ -5,6 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dataDirName, describeInstance } from '../src/profile.js';
+import { CONSOLE_USER, CONSOLE_REALM } from '../src/console-access.js';
 
 
 // Windows 上部分显卡驱动会导致渲染进程黑屏；禁用硬件加速是最稳妥的修复
@@ -122,6 +123,16 @@ ipcMain.on('app-refocus', () => {
 let core = null;
 let tray = null;
 let quitting = false;
+
+// 只为本进程当前监听的回环控制台应答认证挑战。外链和代理均不能取得令牌。
+app.on('login', (event, contents, request, authInfo, callback) => {
+  const port = core?.server.address()?.port;
+  if (!port || contents !== mainWindow?.webContents || authInfo.isProxy ||
+      authInfo.scheme.toLowerCase() !== 'basic' || authInfo.realm !== CONSOLE_REALM ||
+      new URL(request.url).origin !== `http://127.0.0.1:${port}`) return;
+  event.preventDefault();
+  callback(CONSOLE_USER, core.getConsoleToken());
+});
 
 function applyAutoStart() {
   if (!core) return;

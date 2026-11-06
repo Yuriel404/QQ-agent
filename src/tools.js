@@ -7,6 +7,7 @@
 // 重构说明：所有工具通过 registerTool() 注册到 tool-registry.js，
 // 支持在设置页按卡片勾选启用/禁用。
 import { getConfig } from './config.js';
+import { isChatAllowed } from './chat-access.js';
 import { normalizeMessageList, unquoteJsonString } from './util.js';
 import { formatStickerList } from './stickers.js';
 import { skillManager } from './skills/manager.js';
@@ -229,15 +230,8 @@ function registerAllTools() {
           return err(`目标 ${wantTarget} 就是当前会话，直接用 send_message 即可。`);
         }
         const [tKind, tId] = wantTarget.split(':');
-        const allow = getConfig().allow || {};
-        const allowList = (tKind === 'group' ? allow.groups : allow.private) || [];
-        // 白名单空名单口径必须与消息入口 app.allowed() 一致（群/私聊统一：
-        // 空名单 + allowAllWhenEmpty 才放行）。曾经私聊在这里无条件放行，
-        // 入口拒收私聊、send_to 却能替模型把消息发给任意私聊 QQ —— 同一
-        // 白名单概念两处判定相反。
-        const allowedAll = allowList.length === 0 && getConfig().allowAllWhenEmpty === true;
-        if (!(allowList.map(String).includes(tId) || allowedAll)) {
-          return err(`目标 ${wantTarget} 不在白名单内，不能发送。`);
+        if (!isChatAllowed(tKind, tId, getConfig())) {
+          return err(`目标 ${wantTarget} 未获准接收跨会话消息。`);
         }
         const messages = normalizeMessageList(args.messages);
         if (!messages.length) return err('消息内容为空');
@@ -556,7 +550,7 @@ function registerAllTools() {
   registerTool({
     id: 'get_chats',
     name: '查看可用会话',
-    description: '列出机器人参与的会话（chatKey、名字、最近消息时间）。跨会话发送（send_message 的 targetChatKey）前用它查目标。',
+    description: '查看当前会话的 chatKey。管理员开启跨会话发送后，可列出允许 send_to 发送的目标会话。',
     category: 'query',
     icon: '📋',
     parameters: {
@@ -565,18 +559,13 @@ function registerAllTools() {
     },
     async execute(ctx, args) {
       const limit = Math.min(50, Math.max(1, Number(args?.limit) || 20));
-      const chats = ctx.store.listChats()
-        .map((key) => ({ key, ...(ctx.store.getChatMeta(key) || {}) }))
-        .sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0))
-        .slice(0, limit);
-      return ok({
-        count: chats.length,
-        chats: chats.map((c) => ({
-          chatKey: c.key,
-          lastActive: c.lastTs ? new Date(c.lastTs).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '',
-          recentText: String(c.lastText || '').slice(0, 30)
-        }))
-      });
+      const cfg = getConfig();
+      const keys = cfg.tools?.crossChatSend === true ? ctx.store.listChats() : [ctx.chatKey];
+      const chats = keys.filter((key) => {
+        const [kind, id] = key.split(':');
+        return isChatAllowed(kind, id, cfg);
+      }).slice(0, limit).map((chatKey) => ({ chatKey }));
+      return ok({ count: chats.length, chats });
     }
   });
 
@@ -895,7 +884,7 @@ function registerAllTools() {
       if (!ctx.reminders) return err('提醒服务未启用');
       const id = String(args.id ?? '').trim();
       if (!id) return err('请提供提醒 id');
-      const ok_ = ctx.reminders.cancel(id);
+      const ok_ = ctx.reminders.cancel(id, ctx.chatKey);
       return ok_ ? ok({ cancelled: true, id }) : err(`没找到提醒 ${id}（可能已触发或 id 不对，用 list_reminders 查一下）`);
     }
   });

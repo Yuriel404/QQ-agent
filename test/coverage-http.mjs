@@ -829,21 +829,21 @@ c.section('13. 安全回归');
   });
 
   await c.check('密钥接口：本机控制台（带 console 标记头）可读取', async () => {
-    const r = await hit('GET', '/api/api-key', { headers: { 'x-console-token': 'qq-agent-console' } });
+    const r = await hit('GET', '/api/api-key');
     assert.equal(r.status, 200, `本机控制台应放行，实际 ${r.status}`);
     assert.ok('apiKey' in r.data, '应返回 apiKey 字段');
   });
 
   await c.check('GET /api/search-key：未知搜索服务返回 400', async () => {
-    const r = await hit('GET', '/api/search-key?field=不存在的服务', { headers: { 'x-console-token': 'qq-agent-console' } });
+    const r = await hit('GET', '/api/search-key?field=不存在的服务');
     assert.equal(r.status, 400);
   });
 
   await c.check('GET /api/onebot-token：控制台可读令牌明文 + 未知类型 400', async () => {
-    const ok1 = await hit('GET', '/api/onebot-token?which=ws', { headers: { 'x-console-token': 'qq-agent-console' } });
+    const ok1 = await hit('GET', '/api/onebot-token?which=ws');
     assert.equal(ok1.status, 200, `控制台读取应放行，实际 ${ok1.status}`);
     assert.ok('token' in ok1.data, '应返回 token 字段');
-    const bad = await hit('GET', '/api/onebot-token?which=玄学', { headers: { 'x-console-token': 'qq-agent-console' } });
+    const bad = await hit('GET', '/api/onebot-token?which=玄学');
     assert.equal(bad.status, 400, '未知令牌类型应 400');
   });
 
@@ -870,7 +870,7 @@ c.section('13. 安全回归');
     }
   });
 
-  await c.known(
+  await c.check(
     '状态变更接口应校验请求来源（CSRF 防护）',
     async () => {
       const before = app.orchestrator.paused;
@@ -881,8 +881,7 @@ c.section('13. 安全回归');
       });
       assert.notEqual(r.status, 200, '外部来源的简单 POST 不应被接受');
       assert.equal(app.orchestrator.paused, before, '外部来源不应能改变运行状态');
-    },
-    '已知：server.token 默认空 + /api/* 只调 authorize()，无 Origin/Host 校验；text/plain 简单请求可绕过预检'
+    }
   );
 
   await c.check('伪造 x-console-token 头不能绕过来源校验', async () => {
@@ -901,7 +900,7 @@ c.section('13. 安全回归');
     assert.equal(bad.status, 401, `错 token 应 401，实际 ${bad.status}`);
     const good = await request('GET', '/api/status', { headers: { 'x-console-token': 'real-console-token' } });
     assert.equal(good.status, 200, `对 token 应 200，实际 ${good.status}`);
-    // 恢复为空 token，避免影响后续用例
+    // 恢复本次启动生成的令牌
     await request('POST', '/api/config', {
       body: { server: { token: '' } },
       headers: { 'x-console-token': 'real-console-token' }

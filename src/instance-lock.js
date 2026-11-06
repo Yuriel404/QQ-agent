@@ -37,7 +37,7 @@ function pidAlive(pid) {
  */
 export function acquireInstanceLock() {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   } catch { /* 忽略，下面写文件会再试 */ }
 
   for (let attempt = 0; attempt < 2; attempt++) {

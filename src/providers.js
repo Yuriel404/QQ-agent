@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { load as loadYaml } from 'js-yaml';
 import { getConfig, updateConfig } from './config.js';
+import { providerKeyValue, resolveProviderRequest } from './provider-credentials.js';
 
 // DSH 未写 baseURL 的提供商，按官方默认端点补全（可在 UI 修改）。
 // 来源：
@@ -118,13 +119,19 @@ export function currentProviders() {
   return (cfg.providers || []).map((p) => withResolvedKey(p, cfg));
 }
 
-/** 给指定提供商设置 API Key（存进配置的 dshProviderKeys，不动 providers 数组）。 */
+/** 更新目录密钥，并清除旧版提供商对象上保存的密钥。 */
 export function setProviderKey(providerId, apiKey) {
+  const cfg = getConfig();
+  if (!cfg.providers?.some((provider) => provider.id === providerId)) return null;
   const key = String(apiKey ?? '').trim();
-  const keys = { ...(getConfig().dshProviderKeys || {}) };
+  const keys = { ...(cfg.dshProviderKeys || {}) };
   if (key) keys[providerId] = key;
   else delete keys[providerId];
-  updateConfig({ dshProviderKeys: keys });
+  const providers = cfg.providers.map((provider) => {
+    if (provider.id !== providerId) return provider;
+    return { ...provider, apiKey: '' };
+  });
+  updateConfig({ providers, dshProviderKeys: { __replace__: keys } });
   return currentProviders().find((p) => p.id === providerId) || null;
 }
 
@@ -158,22 +165,6 @@ function normalizeModelInput(models) {
   return out;
 }
 
-/**
- * 从当前配置里取 provider 对应的真实 Key。
- * ⚠️ 优先级必须与聊天路径 llm.resolveApiKey 一致：dshProviderKeys 优先，
- * providers[].apiKey（历史遗留的明文/掩码）只作回退。曾经这里反过来以
- * providers[].apiKey 优先，同一 provider 两处 key 并存时"测试连通性用的 key"
- * 与"实际聊天用的 key"不同——测试通过但聊天 401（或反之）。
- */
-function providerKeyValue(provider, cfg) {
-  if (provider && typeof provider === 'object') {
-    const dshKey = String(cfg?.dshProviderKeys?.[provider.id] ?? '').trim();
-    if (dshKey && dshKey !== '******') return dshKey;
-    const top = String(provider.apiKey ?? '').trim();
-    if (top && top !== '******') return top;
-  }
-  return '';
-}
 
 /** 提供商对象里 apiKey 可能是掩码/引用，请求前必须解出真实 key。 */
 function withResolvedKey(p, cfg = getConfig()) {
@@ -193,6 +184,7 @@ export async function fetchModelsFrom(baseUrl, apiKey, timeoutMs = 15000) {
   const base = normalizeBaseUrl(baseUrl);
   if (!base) throw new Error('请先填写 Base URL');
   const res = await fetch(`${base}/models`, {
+    redirect: apiKey ? 'error' : 'follow',
     headers: { ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), ...opencodeHeaders(base) },
     signal: AbortSignal.timeout(timeoutMs)
   });
@@ -212,6 +204,7 @@ export async function testModelChat({ baseUrl, apiKey, model }) {
   const timer = setTimeout(() => controller.abort(new Error('超时')), 20000);
   try {
     const res = await fetch(`${base}/chat/completions`, {
+      redirect: apiKey ? 'error' : 'follow',
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -245,22 +238,15 @@ export async function testModelChat({ baseUrl, apiKey, model }) {
 
 /** 测试一个提供商端点（按 providerId 查目录，或直接给 baseUrl/apiKey）。 */
 export async function testOneProvider({ providerId = '', baseUrl = '', apiKey = '' } = {}) {
-  let p = currentProviders().find((x) => x.id === providerId);
-  if (!p) {
-    const base = normalizeBaseUrl(baseUrl);
-    if (!base) return { ok: false, verdict: 'no-endpoint', note: '没有端点地址', latencyMs: 0 };
-    p = { id: providerId || '__tmp__', displayName: hostDisplayName(base), baseURL: base, apiKey: apiKey || '', models: [] };
-  } else if (apiKey && apiKey !== '******') {
-    p = { ...p, apiKey };
-  }
-  return testProvider(p);
+  const endpoint = resolveProviderRequest(getConfig(), { providerId, baseUrl, apiKey });
+  return testProvider({ baseURL: normalizeBaseUrl(endpoint.baseUrl), apiKey: endpoint.apiKey });
 }
 
 /** 新建提供商；若同 baseURL 已存在则合并模型。返回 { provider, created }。 */
 export function upsertProvider({ baseUrl, apiKey, models = [] }) {
   const base = normalizeBaseUrl(baseUrl);
   if (!base) throw new Error('Base URL 不能为空');
-  const providers = currentProviders().map((p) => { const { apiKey: _ak, ...rest } = p; return { ...rest, models: [...(p.models || [])] }; });
+  const providers = (getConfig().providers || []).map((p) => ({ ...p, models: [...(p.models || [])] }));
   const existing = providers.find((p) => normalizeBaseUrl(p.baseURL) === base);
   const entries = normalizeModelInput(models);
   if (existing) {
@@ -307,7 +293,7 @@ export function upsertProvider({ baseUrl, apiKey, models = [] }) {
 /** 给指定提供商追加模型（合并 modelNames）。 */
 export function addModelsToProvider(providerId, models = []) {
   const entries = normalizeModelInput(models);
-  const providers = currentProviders().map((p) => ({ ...p, models: [...(p.models || [])] }));
+  const providers = (getConfig().providers || []).map((p) => ({ ...p, models: [...(p.models || [])] }));
   const p = providers.find((x) => x.id === providerId);
   if (!p) return null;
   p.modelNames = { ...(p.modelNames || {}) };
@@ -315,13 +301,13 @@ export function addModelsToProvider(providerId, models = []) {
     if (!p.models.includes(m.id)) p.models.push(m.id);
     p.modelNames[m.id] = m.name;
   }
-  updateConfig({ providers: providers.map((x) => { const { apiKey, ...rest } = x; return rest; }) });
-  return p;
+  updateConfig({ providers });
+  return withResolvedKey(p);
 }
 
 /** 从提供商移除一个模型。 */
 export function removeModelFromProvider(providerId, modelId) {
-  const providers = currentProviders().map((p) => ({ ...p, models: [...(p.models || [])] }));
+  const providers = (getConfig().providers || []).map((p) => ({ ...p, models: [...(p.models || [])] }));
   const p = providers.find((x) => x.id === providerId);
   if (!p) return null;
   p.models = p.models.filter((id) => id !== modelId);
@@ -329,8 +315,8 @@ export function removeModelFromProvider(providerId, modelId) {
     p.modelNames = { ...p.modelNames };
     delete p.modelNames[modelId];
   }
-  updateConfig({ providers: providers.map((x) => { const { apiKey, ...rest } = x; return rest; }) });
-  return p;
+  updateConfig({ providers });
+  return withResolvedKey(p);
 }
 
 /**
@@ -376,6 +362,7 @@ export async function testProvider(p, timeoutMs = 12000) {
   const timer = setTimeout(() => controller.abort(new Error('超时')), timeoutMs);
   try {
     const res = await fetch(`${p.baseURL}/models`, {
+      redirect: p.apiKey ? 'error' : 'follow',
       headers: {
         ...(p.apiKey ? { authorization: `Bearer ${p.apiKey}` } : {}),
         ...opencodeHeaders(p.baseURL)

@@ -13,9 +13,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { isChatAllowed } from './chat-access.js';
+import { resolveProviderRequest } from './provider-credentials.js';
 import { getConfig, updateConfig, deepMerge as deepMergeConfig, DATA_DIR } from './config.js';
 import { customSearch } from './web-search.js';
-import { listModels, chatCompletion, resolveApiKey, estimateCost, cacheHitRate } from './llm.js';
+import { listModels, chatCompletion, estimateCost, cacheHitRate } from './llm.js';
 import { resolveOfficialPrice, listOfficialPrices } from './model-prices.js';
 import { refreshPriceFeed, priceFeedStatus } from './price-feed.js';
 import {
@@ -31,6 +34,20 @@ import { getSkillConfig, setSkillConfig, setSkillEnabled, listConfiguredSkillIds
 import { availabilityOf, listTools, CATEGORY_META } from './tool-registry.js';
 import { detectDialect as detectThinkingDialect } from './thinking.js';
 
+async function openOnDesktop(target, res, json, payload = {}) {
+  if (process.platform !== 'win32') {
+    return json(res, 501, { ok: false, error: '此操作需要 Windows 桌面。' });
+  }
+  try {
+    const child = spawn('explorer.exe', [target], { detached: true, stdio: 'ignore' });
+    await once(child, 'spawn');
+    child.unref();
+    return json(res, 200, { ok: true, ...payload });
+  } catch (error) {
+    return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+  }
+}
+
 /**
  * 构建路由表。
  * @param {object} deps 依赖注入
@@ -42,7 +59,7 @@ export function createRoutes(deps) {
     // app.js 内部的过程/状态
     localVersion, compareSemver, UPDATE_INFO_URL,
     sanitizeConfig, keyEndpointAllowed, sanitizeProvider,
-    readBody, authorize,
+    readBody,
     snowlumaDir, snowlumaWsPort, snowlumaWebuiUrl, snowlumaStatus, snowlumaLogs,
     launchSnowluma, stopSnowluma,
     qqPortableStatus, qqPortableLogs, launchPortableQQ, stopPortableQQ,
@@ -134,14 +151,7 @@ export function createRoutes(deps) {
     },
     {
       method: 'POST', pattern: '/api/open-data-dir',
-      handler: async ({ res, json }) => {
-        try {
-          spawn('explorer.exe', [DATA_DIR], { detached: true, stdio: 'ignore' }).unref();
-          return json(res, 200, { ok: true, dir: DATA_DIR });
-        } catch (error) {
-          return json(res, 500, { ok: false, error: String(error?.message ?? error) });
-        }
-      }
+      handler: ({ res, json }) => openOnDesktop(DATA_DIR, res, json, { dir: DATA_DIR })
     },
     {
       method: 'POST', pattern: '/api/reset-data',
@@ -266,8 +276,7 @@ export function createRoutes(deps) {
       handler: async ({ res, json }) => {
         const dir = snowlumaDir();
         if (!dir) return json(res, 400, { ok: false, error: '找不到 SnowLuma 目录' });
-        spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref();
-        return json(res, 200, { ok: true });
+        return openOnDesktop(dir, res, json);
       }
     },
     {
@@ -275,8 +284,8 @@ export function createRoutes(deps) {
       handler: async ({ res, json }) => {
         const webuiUrl = snowlumaWebuiUrl();
         if (!webuiUrl) return json(res, 400, { ok: false, error: '没有找到 SnowLuma WebUI 地址（等日志出现 listening 后再试）' });
-        spawn('cmd.exe', ['/c', 'start', '', webuiUrl], { detached: true, stdio: 'ignore' }).unref();
-        return json(res, 200, { ok: true, webuiUrl });
+        if (!/^https?:\/\//i.test(webuiUrl) || !URL.canParse(webuiUrl)) return json(res, 400, { ok: false, error: '无效的 WebUI 地址' });
+        return openOnDesktop(new URL(webuiUrl).href, res, json, { webuiUrl });
       }
     },
 
@@ -454,22 +463,7 @@ export function createRoutes(deps) {
       handler: async ({ req, res, json }) => {
         try {
           const body = await bodyOf(req);
-          const cfgNow = getConfig();
-          const baseUrl = String(body.baseUrl || cfgNow.api.baseUrl || '');
-          // Key 解析顺序（2026-09-20 修 401 高发）：显式明文 > 按 providerId 查该提供商
-          // 保存的 Key（dshProviderKeys / providers[].apiKey）> 顶层 api.apiKey。
-          // 旧实现只看顶层 Key —— 多提供商场景下顶层只存"当前选中那个"的 Key，
-          // 从其它提供商拉列表就会拿错 Key，全部 401。
-          let apiKey = '';
-          if (body.apiKey !== undefined && String(body.apiKey ?? '').trim() && body.apiKey !== '******') {
-            apiKey = String(body.apiKey).trim();
-          } else {
-            const pid = String(body.providerId ?? '').trim();
-            const p = pid ? currentProviders().find((x) => x.id === pid) : null;
-            apiKey = String(p?.apiKey ?? '').trim();
-            if (!apiKey) apiKey = String(cfgNow.api.apiKey || '').trim();
-            if (apiKey === '******') apiKey = '';
-          }
+          const { baseUrl, apiKey } = resolveProviderRequest(getConfig(), body);
           const models = await fetchModelsFrom(baseUrl, apiKey);
           return json(res, 200, { ok: true, models });
         } catch (error) {
@@ -498,9 +492,7 @@ export function createRoutes(deps) {
       handler: async ({ req, res, json }) => {
         try {
           const body = await bodyOf(req);
-          const submitted = String(body.apiKey ?? '').trim();
-          const apiKey = (submitted && submitted !== '******') ? submitted : resolveApiKey(getConfig());
-          const baseUrl = String(body.baseUrl ?? '');
+          const { baseUrl, apiKey } = resolveProviderRequest(getConfig(), body);
           const model = String(body.model ?? '');
           const result = await testModelChat({ baseUrl, apiKey, model });
           // 「思考方言」由内置方言表识别（原 thinking-adapters 插件收编进核心）。
@@ -1226,17 +1218,8 @@ export function createRoutes(deps) {
         //   全空时必须显式开 allowAllWhenEmpty。
         const kind = match[1];
         const id = match[2];
-        const cfgNow = getConfig();
-        const denyList = cfgNow.deny?.[kind] ?? cfgNow.deny?.[`${kind}s`] ?? [];
-        if (denyList.map(String).includes(String(id))) {
-          return json(res, 403, { error: '该会话在黑名单内，不能发送' });
-        }
-        const allowList = cfgNow.allow?.[kind] ?? cfgNow.allow?.[`${kind}s`] ?? [];
-        const allowed = allowList.length > 0
-          ? allowList.map(String).includes(String(id))
-          : cfgNow.allowAllWhenEmpty === true;
-        if (!allowed) {
-          return json(res, 403, { error: '该会话不在白名单内，不能发送（先在设置里加白名单，或开启空白名单放行）' });
+        if (!isChatAllowed(kind, id, getConfig())) {
+          return json(res, 403, { error: '该会话未获准接收消息，请检查黑名单和白名单。' });
         }
         try {
           const chatKey = `${kind}:${id}`;

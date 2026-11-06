@@ -351,13 +351,20 @@ export async function bootApp({ config = {}, script = [] } = {}) {
   await waitFor(() => app.onebot.connected, 10000, 'OneBot WS 连接');
 
   const base = `http://127.0.0.1:${port}`;
+  const consoleFetch = (input, init = {}) => {
+    const url = new URL(String(input), base);
+    if (url.origin !== base) throw new Error('测试客户端只访问本次启动的控制台');
+    const headers = new Headers(init.headers);
+    if (!headers.has('x-console-token')) headers.set('x-console-token', app.getConsoleToken());
+    return fetch(url, { ...init, headers, redirect: 'error' });
+  };
   const request = async (method, p, { body, headers = {}, origin } = {}) => {
     const h = { ...headers };
     if (origin) h.origin = origin;
     if (body !== undefined && !h['content-type']) h['content-type'] = 'application/json';
     let res;
     try {
-      res = await fetch(base + p, { method, headers: h, body: body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)) });
+      res = await consoleFetch(p, { method, headers: h, body: body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)) });
     } catch (error) {
       // 把 undici 的真实原因（ECONNREFUSED / ECONNRESET / UND_ERR_…）带出来，否则只有一句 fetch failed
       const cause = error?.cause?.code || error?.cause?.message || '';
@@ -413,5 +420,5 @@ export async function bootApp({ config = {}, script = [] } = {}) {
     try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   };
 
-  return { dataDir, app, port, base, request, rawRequest, onebotHttp, onebotWs, llm, pushGroupMsg, waitSessionDone, teardown };
+  return { dataDir, app, port, base, consoleFetch, request, rawRequest, onebotHttp, onebotWs, llm, pushGroupMsg, waitSessionDone, teardown };
 }
