@@ -1,0 +1,12 @@
+# 构建只取运行时代码。配置、聊天数据、密钥和本地扩展留在宿主机。
+**
+!package.json
+!package-lock.json
+!LICENSE
+!src/*.js
+!src/skills/*.js
+!ui/*.html
+!ui/*.css
+!ui/*.js
+!ui/app/*.js
+!ui/vendor/*.js

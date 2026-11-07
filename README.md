@@ -1,8 +1,8 @@
-# QQ Agent（桌面端）
-![平台](https://img.shields.io/badge/platform-Windows%20%7C%20Electron-lightgrey)
+# QQ Agent
+![平台](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20Docker-lightgrey)
 ![技术栈](https://img.shields.io/badge/stack-Node.js%20%7C%20原生前端-orange)
 ![测试](https://img.shields.io/badge/tests-24%20suites%20%E2%80%89620%2B%20assertions-brightgreen)
-一个跑在你自己电脑上的 QQ 群聊机器人：装完双击启动，扫码登录，填个模型 Key 就能用。
+一个可以自行部署的 QQ 群聊机器人。Windows 支持桌面启动，Linux 云服务器可以用 Docker Compose 运行后端和 Web 控制台，连接已有的 OneBot v11 网关。
 事件驱动 + 无状态会话架构，每次处理的 token 成本恒定可控；所有操作都在图形控制台里完成，不用碰命令行。
 从 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 彻底改造而来的独立 QQ agent 应用。
 ## 能实现什么
@@ -97,6 +97,45 @@ plugins/my-plugin/            skills/my-skill/
 在项目根目录运行 `node scripts/new-skill.mjs my-skill --name "我的技能"`，会生成 `skills/my-skill/`。在 `index.js` 的 `setup(api)` 中用 `api.registerTool(...)` 注册工具，将业务逻辑填入工具的 `execute`。在 Web UI 的「技能」页点「刷新」，确认已启用且显示「生效中」。脚手架生成的示例工具名为 `my-skill__run`。
 
 ## 安装与使用
+### Linux 云服务器（Docker Compose）
+
+QQ Agent 会加入宿主机上已有的 Docker 网络 `astrabot_network`。网络名称在 `compose.yaml` 的 `networks.default.name` 中设置。如果是全新服务器，可先运行 `docker network create --driver bridge astrabot_network` 创建它。
+
+把项目放到已安装 Docker Engine 和 Compose 的服务器上，在含有 `compose.yaml` 的项目根目录执行：
+
+```bash
+mkdir -p skills plugins
+if [ ! -e .env ]; then
+  (umask 077 && token=$(openssl rand -hex 32) && printf 'QQ_AGENT_CONSOLE_TOKEN=%s\n' "$token" > .env)
+fi
+docker compose up -d --build
+docker compose ps
+```
+
+首次启动会构建本地镜像 `qq-agent:local`。已有 `.env` 时，请在其中设置至少 32 字符的 `QQ_AGENT_CONSOLE_TOKEN`。只构建镜像可运行 `docker compose build`（Compose 仍会读取该令牌配置），或直接运行 `docker build -t qq-agent:local .`。
+
+如果服务器无法连接 Docker Hub，可从 Amazon ECR 的 Docker Official Images 仓库获取 Node 基础镜像：
+
+```bash
+docker compose build --build-arg NODE_IMAGE=public.ecr.aws/docker/library/node:24-bookworm-slim
+docker compose up -d --no-build --pull never
+```
+
+控制台默认发布到服务器回环地址。在**自己电脑**上建立 SSH 隧道，保持终端打开：
+
+```bash
+ssh -NT -L 3210:127.0.0.1:3210 用户名@服务器地址
+```
+
+在浏览器打开 <http://127.0.0.1:3210>，用户名为 `admin`，密码为服务器 `.env` 中的控制台令牌。宿主机端口被占用时，可在 `.env` 设置 `QQ_AGENT_PUBLISHED_PORT`，并相应修改 SSH 命令中第二个 `3210`。使用公网域名时，按下文「Web 控制台登录」配置 HTTPS 和 `QQ_AGENT_ALLOWED_ORIGINS`，反向代理对 `/api/events` 关闭响应缓冲。
+
+要实际收发 QQ 消息，先让 OneBot v11 网关登录 QQ 并开启**正向 WebSocket 和 HTTP API**。在「设置 → OneBot（SnowLuma）」填写容器可访问的两个地址及对应令牌。例如网关与 Agent 共享 Docker 网络、网关服务名为 `onebot` 时，可填 `ws://onebot:3001` 和 `http://onebot:3000`，端口以网关配置为准。容器内的 `127.0.0.1` 指向 Agent 自身。保存后运行 `docker compose restart qq-agent`，再在控制台配置模型和聊天白名单。
+
+配置、搜索池密钥和聊天记录保存在命名卷 `qq-agent-data`（Compose 默认加项目前缀），每个卷只运行一个 Agent。更新代码后在同一项目目录重新运行 `docker compose up -d --build` 即可复用数据。日常停止用 `docker compose down`；加 `-v` 会同时删除数据卷。自设技能和插件分别放在宿主机项目的 `skills/` 和 `plugins/`，容器只读挂载这两个目录。
+
+要沿用旧实例的数据，可在首次启动前停止旧实例，把备份的 `data/` 复制到云服务器的 `/srv/qq-agent/data/`。将 Compose 里的 `qq-agent-data:/var/lib/qq-agent` 改为 `/srv/qq-agent:/var/lib/qq-agent`，确保容器的 `node` 用户（默认 UID/GID 为 1000）可以读写该目录及其内容，然后启动。
+
+### Windows 桌面端
 **三步搞定**（推荐）：
 ```bash
 git clone https://github.com/K0nd1us/QQ-agent.git

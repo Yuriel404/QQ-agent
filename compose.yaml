@@ -1,0 +1,38 @@
+services:
+  qq-agent:
+    image: qq-agent:local
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 35s
+    environment:
+      QQ_AGENT_CONSOLE_TOKEN: "${QQ_AGENT_CONSOLE_TOKEN:?请在 .env 设置至少 32 个字符的控制台令牌}"
+      QQ_AGENT_ALLOWED_ORIGINS:
+      TZ: "${TZ:-Asia/Shanghai}"
+    ports:
+      - "127.0.0.1:${QQ_AGENT_PUBLISHED_PORT:-3210}:3210"
+    volumes:
+      - qq-agent-data:/var/lib/qq-agent
+      - ./skills:/app/skills:ro
+      - ./plugins:/app/plugins:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3210/', {
+            headers: { 'x-console-token': process.env.QQ_AGENT_CONSOLE_TOKEN }
+          }).then(r => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  qq-agent-data:
+
+networks:
+  default:
+    name: astrabot_network
+    external: true
