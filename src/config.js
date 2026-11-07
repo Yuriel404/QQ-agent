@@ -57,7 +57,7 @@ export const DEFAULT_CONFIG = {
     // 视频输入（模型能不能吃 video 部分）。与 vision 相互独立：
     //   勾了 vision + video → 有人发 GIF 动图时，用 ffmpeg 转成 ≤480px / ≤24 帧的
     //                        mp4，按 video 部件发给模型（llm.js 自动切 videoModel）
-    //   勾了 vision 没勾 video → GIF 按图片原样发（部分视觉模型能直接读动图）
+    //   勾了 vision 没勾 video → 从 GIF 抽帧，按时间顺序拼成一张静态 PNG
     //   没勾 vision → 看图工具整个不存在，GIF 自然也看不到
     // 默认关闭：猜错"模型支持视频"的代价是请求 400，比不启用更糟（同 videoModel 的口径）。
     video: false,

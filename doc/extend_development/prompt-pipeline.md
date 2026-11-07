@@ -70,18 +70,19 @@ proactive 运行在 user 消息末尾追加「（主动机会）群里已有一�
 - 最后 3 轮还没发过言：push 一条 user 消息【系统提醒】催它 send_message
 - 会话级中止（AbortController）在轮边界与退避期检查，立即收尾
 
-## 第 8 步：llm.js 发送前（内容不再变，但换模型/改请求体）
+## 第 8 步：llm.js 发送模型请求
 
 - `specializedModelFor`：扫到 video_url 部件 → 换视频专用模型（videoModel）；有 image_url → 换图片专用模型（visionModel）。仅主调用路径，记忆整理/备选降级不受影响
 - `llm.request-params` 转换器（thinking-adapters 等）：往请求体加思考参数、删互斥 temperature（改 body 不改 messages）
-- 网关拒收图片格式（image-compat 插件 isImageRejection）：降级重发**摘掉 image_url 部件**换成文字说明——发送路径上最后一次内容修改
+- 对只支持静态图片的网关，在「模型配置」开启「图片输入」、关闭「视频输入」。看图工具按实际字节识别 GIF，用 FFmpeg 抽取最多 4 帧，按时间顺序拼成一张 PNG，交给图片输入专用模型（留空时用主模型）。
+- 如果含媒体的请求收到 415，或 400/422 明确指出不支持该媒体，先尝试已配置的备选模型。原格式均被拒时，尝试将内联的 GIF、WebP 或 MP4 转为静态 PNG 首帧。仍无法读取时，向模型说明媒体不可见，以文字继续。后续工具轮次沿用成功的消息内容。
 
 ## 分工总览
 
 - **prompt.js 独占核心提示词**：安全规则、工具协议；插件 priority 封顶 99，永远排在核心规则之后
 - **orchestrator 决定何时组装、带哪些数据**：档位、主动机会、多轮消息管理
 - **插件三个介入口**：promptSections 追加段落、before-context 采集、before-llm-messages 原地加工
-- **llm.js 管发送层**：专用模型切换、请求体转换、格式降级，不动 messages 内容（image-compat 降级除外）
+- **llm.js 管发送层**，负责专用模型切换、请求体转换和媒体降级。
 
 ## 附：UI 提示词预览（2026-09-17 补）
 

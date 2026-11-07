@@ -14,7 +14,7 @@ import { randInt } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, resolveContextTier } from './prompt.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError, resolveApiKey } from './llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from './tools.js';
-import { modelImageVerdict } from './vision-scan.js';
+import { canUseImageTools } from './vision-scan.js';
 import { currentProviders } from './providers.js';
 import { skillManager } from './skills/manager.js';
 import { getToolAvailability } from './tool-registry.js';
@@ -728,9 +728,7 @@ export class Orchestrator {
     }
 
     // ── 统一可用性上下文 ──
-    // 视觉判定 = 全局开关 && 选中模型未被探测为"明确不支持图片"（未探测/unknown 时保持开关行为）
-    const visionEnabled = cfg.api.vision !== false
-      && modelImageVerdict(cfg.api.provider, cfg.api.model) !== 'no-vision';
+    const visionEnabled = canUseImageTools(cfg.api);
     const searchEnabled = cfg.webSearch?.enabled !== false;
     const toolsCfg = cfg.tools || {};
     const skillContext = {
@@ -802,7 +800,7 @@ export class Orchestrator {
     this.sessions.update(session.id);
     this.emit('session-update', session.id);
 
-    const messages = [
+    let messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: proactive
         ? `${userPrompt}\n\n【未读信息】（主动机会）群里已有一段时间没有新消息。可以发起新话题，也可以直接结束。`
@@ -900,6 +898,8 @@ export class Orchestrator {
       // abortSignal：会话级中止时在途请求立即断开 —— isRetryableError 把
       // "中止"判为不可重试，chatCompletionWithRetry 不再打下一发，直接上抛。
       const response = await chatCompletionWithRetry({ messages, tools: openAiTools, skillContext, signal: abortSignal });
+      // 后续工具轮次复用网关已接受的首帧或文字提示，避免把被拒的原图再次送入同一会话。
+      if (response._acceptedMessages) messages = response._acceptedMessages;
       session.model = response.model || session.model;
       // 渠道与模型必须同源：fallback 可以配另一个 provider，只更新 model 会把
       // 这次调用记到主渠道名下，导致按渠道拆分的成本报表误导用户。

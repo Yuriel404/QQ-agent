@@ -870,10 +870,21 @@ refs:
   const noVisionReq = llm.state.requests.at(-1);
   assert.ok(!noVisionReq.tools?.some((t) => t.function?.name === 'get_message_images'), 'no-vision 模型不带看图工具');
 
+  await consoleFetch('/api/config', {
+    method: 'POST',
+    body: JSON.stringify({ api: { visionModel: 'vision-ok-model' } })
+  });
+  llm.state.script.push({ content: '（安静）' });
+  pushGroupMsg(119, '阿九', '试一下独立图片模型', 9129);
+  await waitFor(() => llm.state.requests.some((r) => String(r.messages?.[1]?.content || '').includes('试一下独立图片模型')), 8000, '带图片专用模型的文字请求');
+  const splitVisionReq = llm.state.requests.at(-1);
+  assert.equal(splitVisionReq.model, 'vision-no-model');
+  assert.ok(splitVisionReq.tools?.some((t) => t.function?.name === 'get_message_images'), '文字主模型可以调用专用图片模型的看图工具');
+
   // 切到视觉模型：看图工具恢复
   await consoleFetch(`/api/config`, {
     method: 'POST',
-    body: JSON.stringify({ api: { provider: visionProv.id, model: 'vision-ok-model' } })
+    body: JSON.stringify({ api: { provider: visionProv.id, model: 'vision-ok-model', visionModel: '' } })
   });
   llm.state.script.push({ content: '（安静2）' });
   pushGroupMsg(120, '阿十', '看看有视觉模型', 9030);

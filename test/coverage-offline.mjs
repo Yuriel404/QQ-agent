@@ -1230,7 +1230,7 @@ c.section('15. gif-to-video.js GIF 转视频（含奇数尺寸回归）');
 
   await c.check('resolveGifRoute：四象限规则矩阵', () => {
     assert.equal(g.resolveGifRoute({ vision: true, video: true }), 'video', '双开 → 转 mp4');
-    assert.equal(g.resolveGifRoute({ vision: true, video: false }), 'gif-image', '只开图片 → 按图发');
+    assert.equal(g.resolveGifRoute({ vision: true, video: false }), 'gif-image', '只开图片 → 抽帧为一张静态图');
     assert.equal(g.resolveGifRoute({ vision: false, video: true }), 'image', '图片关 → 占位符');
     assert.equal(g.resolveGifRoute({ vision: false, video: false }), 'image', '双关 → 占位符');
   });

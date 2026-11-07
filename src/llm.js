@@ -4,6 +4,7 @@ import { getConfig } from './config.js';
 import { providerKeyValue, resolveProviderRequest, sameProviderEndpoint } from './provider-credentials.js';
 import { resolveModelPrice, priceAt } from './model-prices.js';
 import { skillManager } from './skills/manager.js';
+import { adaptMediaMessages, hasUserMedia, isMediaRejection } from './media-retry.js';
 import {
   resolveThinkingRequest, buildThinkingParams, stripThinkingParams,
   looksLikeThinkingRejection, extractReasoning, extractReasoningTokens, THINKING_BODY_KEYS
@@ -144,12 +145,13 @@ function buildCandidateApis() {
  */
 export function isRetryableError(error) {
   const msg = String(error?.message ?? error ?? '');
+  if (error?.status === 415) return false;
 
   // 主动中止（用户/系统取消）：重试没有意义
   if (/aborted|中止|已取消|cancel/i.test(msg)) return false;
 
   // 明确的客户端错误：重试也不会变好，只会白烧额度
-  if (/HTTP\s*(401|400|403|404|405|409|413|422)/i.test(msg)) return false;
+  if (/HTTP\s*(401|400|403|404|405|409|413|415|422)/i.test(msg)) return false;
   if (/unauthorized|forbidden|invalid api.?key|incorrect api.?key/i.test(msg)) return false;
 
   // 明确的暂时性故障
@@ -169,61 +171,66 @@ export function isRetryableError(error) {
   return false;
 }
 
-/**
- * 带重试的单次对话请求。
- *
- * 两层容错：
- *   1. **同模型重试**：网络抖动/5xx/429 时，同一模型指数退避重试（1s→2s）。
- *   2. **备选模型降级**：主模型重试后仍失败，且错误可重试时，
- *      逐个用 api.fallbackModels 里的备选模型重试，直到某个成功。
- *
- * 注意：这里重试的是**同一轮**请求，messages 不变，所以是幂等的，
- * 不会造成重复发言。会话级的整体重试在 orchestrator 里做。
- *
- * @param {object} args 同 chatCompletion
- * @param {number} [retries=2] 每个模型最多额外重试几次（默认 2，即每模型最多 3 次尝试）
- * @returns {Promise<{message, usage, raw, model, _usedModel, _usedApi}>}
- *   额外带 _usedModel（实际成功的模型 id）与 _usedApi（实际使用的端点配置），
- *   调用方据此同步 session.model / session.vendor，保证成本看板的「渠道:模型」同源。
- */
-export async function chatCompletionWithRetry(args, retries = 2) {
-  const candidates = buildCandidateApis();
-  let lastError = null;
-
-  for (let ci = 0; ci < candidates.length; ci++) {
-    const { overrides, label } = candidates[ci];
-    // 主模型失败且要切备选时，先提示一次（让用户在日志里看到降级发生）
-    if (ci > 0) {
-      console.warn(`[llm] 主模型重试仍失败，切换到备选模型 ${ci}/${candidates.length - 1}：${label}`);
+async function requestCandidate(args, { overrides, label }, retries) {
+  for (let attempt = 0; ; attempt++) {
+    // 外部已中断（如调用方的 AbortSignal）就别再发起注定失败的请求 ——
+    // 曾经退避 sleep 期间不看中断，最多再白打一次 API（白花一份钱）
+    if (args?.signal?.aborted) throw args.signal.reason ?? new Error('aborted');
+    try {
+      const r = await chatCompletion({ ...args, overrides });
+      r._usedModel = r.model || (overrides?.model ?? getConfig().api?.model ?? '');
+      // 把"这次实际用的端点"一并带回去：备选模型可能来自**另一个 provider**，
+      // 调用方要据此同步 vendor，否则成本看板的「渠道：模型」聚合会串味。
+      r._usedApi = overrides ?? getConfig().api;
+      return r;
+    } catch (error) {
+      if (attempt >= retries || error.mediaRejected || !isRetryableError(error)) throw error;
+      const wait = 1000 * Math.pow(2, attempt);   // 1s, 2s
+      console.warn(`[llm] 请求失败（${label}，第 ${attempt + 1} 次尝试），${wait}ms 后重试：${error?.message ?? error}`);
+      // 退避等待可被 signal 打断：中止时立刻抛出，不再等下一次注定失败的请求
+      const signal = args?.signal ?? null;
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => { signal?.removeEventListener?.('abort', onAbort); resolve(); }, wait);
+        const onAbort = () => { clearTimeout(t); reject(signal.reason ?? new Error('aborted')); };
+        if (signal?.aborted) { clearTimeout(t); reject(signal.reason ?? new Error('aborted')); return; }
+        signal?.addEventListener?.('abort', onAbort, { once: true });
+      });
     }
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      // 外部已中断（如调用方的 AbortSignal）就别再发起注定失败的请求 ——
-      // 曾经退避 sleep 期间不看中断，最多再白打一次 API（白花一份钱）
-      if (args?.signal?.aborted) throw args.signal.reason ?? new Error('aborted');
+  }
+}
+
+/** 保留本轮工具上下文，按原媒体、静态画面、文字依次尝试可用的模型。 */
+export async function chatCompletionWithRetry(args, retries = 2) {
+  let candidates = buildCandidateApis();
+  let messages = args.messages;
+  let lastError;
+  // 先让所有候选尝试原始媒体，避免第一个模型不支持 GIF 时丢掉可读的动图。
+  for (const mode of ['original', 'frames', 'text']) {
+    if (mode !== 'original') {
+      const adapted = await adaptMediaMessages(args.messages, mode, args.signal);
+      if (adapted === args.messages || (mode === 'frames' && !hasUserMedia(adapted))) continue;
+      messages = adapted;
+    }
+    const rejectedMedia = [];
+    for (const candidate of candidates) {
+      if (candidate.overrides) console.warn(`[llm] 尝试备选模型：${candidate.label}`);
       try {
-        const r = await chatCompletion({ ...args, overrides });
-        r._usedModel = r.model || (overrides?.model ?? getConfig().api?.model ?? '');
-        // 把"这次实际用的端点"一并带回去：备选模型可能来自**另一个 provider**，
-        // 调用方要据此同步 vendor，否则成本看板的「渠道：模型」聚合会串味。
-        r._usedApi = overrides ?? getConfig().api;
-        return r;
+        const response = await requestCandidate({ ...args, messages }, candidate, retries);
+        if (messages !== args.messages) {
+          response._acceptedMessages = messages;
+          response.degraded = true;
+          const note = hasUserMedia(messages) ? '网关拒收原媒体，已调整画面输入' : '网关拒收媒体，已改用文字继续';
+          response.degradeNote = [note, response.degradeNote].filter(Boolean).join('；');
+        }
+        return response;
       } catch (error) {
+        args.signal?.throwIfAborted();
         lastError = error;
-        if (attempt >= retries || !isRetryableError(error)) break;   // 换下一个候选模型
-        const wait = 1000 * Math.pow(2, attempt);   // 1s, 2s
-        console.warn(`[llm] 请求失败（${label}，第 ${attempt + 1} 次尝试），${wait}ms 后重试：${error?.message ?? error}`);
-        // 退避等待可被 signal 打断：中止时立刻抛出，不再等下一次注定失败的请求
-        const signal = args?.signal ?? null;
-        await new Promise((resolve, reject) => {
-          const t = setTimeout(() => { signal?.removeEventListener?.('abort', onAbort); resolve(); }, wait);
-          const onAbort = () => { clearTimeout(t); reject(signal.reason ?? new Error('aborted')); };
-          if (signal?.aborted) { clearTimeout(t); reject(signal.reason ?? new Error('aborted')); return; }
-          signal?.addEventListener?.('abort', onAbort, { once: true });
-        });
+        if (error.mediaRejected) rejectedMedia.push(candidate);
       }
     }
-    // 该候选的所有重试都失败了：只有错误可重试才值得试下一个备选；
-    // 4xx（密钥错/参数错）换模型通常也没用，但备选可能用不同提供商，仍继续尝试。
+    if (!rejectedMedia.length) throw lastError;
+    candidates = rejectedMedia;
   }
   throw lastError ?? new Error('模型请求失败（主模型与全部备选均不可用）');
 }
@@ -374,19 +381,21 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
 
   let res;
   let degradeNote = null;
+  let sentMessages;
   try {
     const baseBody = buildBaseBody();
     if (temp !== null && temp !== undefined && Number.isFinite(Number(temp))) baseBody.temperature = Number(temp);
     const transformed = await applyRequestTransforms(baseBody);
     const body = transformed.body;
     const removedTemperature = transformed.removedTemperature;
+    sentMessages = body.messages;
     res = await post(body);
 
     // ── 参数被网关拒绝时的一次性降级重试 ──
     // 场景：Skill 加上了 thinking/reasoning 参数，但该网关/模型不认（400/422）。
     // 谁来决定"去掉哪些参数"？由 Skill 通过 llm.retry-advisor 给建议；
     // **重试动作仍然在这里执行**，所以超时预算、abort、日志、计费口径都不变。
-    if (!res.ok && (res.status === 400 || res.status === 422)) {
+    if (!res.ok && (res.status === 400 || res.status === 422 || (res.status === 415 && hasUserMedia(sentMessages)))) {
       const retry = await withoutRejectedParams(body, res.text, ctx, res.status);
       if (retry) {
         degradeNote = retry.reason || '网关拒绝扩展参数，已去掉后重试';
@@ -395,6 +404,7 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
         if (removedTemperature !== undefined && retry.body.temperature === undefined) {
           retry.body.temperature = removedTemperature;
         }
+        sentMessages = retry.body.messages;
         res = await post(retry.body);
       }
     }
@@ -408,7 +418,10 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
     if (poolAccountId) {
       reportPoolFeedback({ accountId: poolAccountId, ok: false, status: res.status, error: res.text.slice(0, 300) });
     }
-    throw new Error(`模型 API HTTP ${res.status}：${res.text.slice(0, 500)}`);
+    const error = new Error(`模型 API HTTP ${res.status}：${res.text.slice(0, 500)}`);
+    error.status = res.status;
+    error.mediaRejected = isMediaRejection(res.status, res.text) && hasUserMedia(sentMessages);
+    throw error;
   }
 
   // ── "返回了无法解析的 JSON" 根因治理 ──
@@ -524,7 +537,7 @@ async function withoutRejectedParams(body, errorText, ctx, status = 400) {
   // ── 内置思考模式（原 thinking-adapters 插件收编）：网关拒绝思考参数时摘掉重发 ──
   // 只在错误文本确实在抱怨思考字段时才建议重试，避免把普通 400（模型名写错、
   // Key 无效）也重试一遍，白白多花一次调用。
-  if (looksLikeThinkingRejection(errorText)) {
+  if (status !== 415 && looksLikeThinkingRejection(errorText)) {
     const keys = THINKING_BODY_KEYS.filter((k) => k in body);
     if (keys.length) {
       return {

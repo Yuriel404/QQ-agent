@@ -232,7 +232,7 @@ function openModelConfigModal() {
         <label for="mc-vision">图片输入（关闭则移除看图工具）</label>
         <span id="mc-vision-hint" class="muted" style="font-size:12px;align-self:center"></span></div>
       <div class="checkbox-row"><input type="checkbox" id="mc-video" ${c.api?.video === true ? 'checked' : ''} />
-        <label for="mc-video">视频输入（GIF 转视频发给模型）</label></div>
+        <label for="mc-video">视频输入（开启时将 GIF 转为视频，关闭时将 GIF 抽帧拼成静态图）</label></div>
       <div class="field-row">
         <div class="field"><label>图片输入专用模型（留空用主模型）</label>
           <div style="display:flex;gap:8px">

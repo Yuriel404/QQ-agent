@@ -27,7 +27,7 @@ import {
   currentProviders, setProviderKey, testAllProviders, testOneProvider,
   testModelChat, fetchModelsFrom, upsertProvider, addModelsToProvider, removeModelFromProvider, removeProvider
 } from './providers.js';
-import { scanModelsVision, visionResults, modelImageVerdict } from './vision-scan.js';
+import { scanModelsVision, visionResults, canUseImageTools } from './vision-scan.js';
 import { builtinVisionResults } from './model-vision-docs.js';
 import { todayKey } from './util.js';
 import { logger } from './logger.js';
@@ -88,8 +88,7 @@ export function createRoutes(deps) {
       // 与 orchestrator 同款判定：vision 开关开着，且当前模型没有被
       // 视觉扫描判定为 no-vision（曾经只看前半项，模型不支持时
       // 设置页仍显示视觉工具可用，运行时却剔除）
-      visionEnabled: cfg.api?.vision !== false
-        && modelImageVerdict(cfg.api?.provider, cfg.api?.model) !== 'no-vision',
+      visionEnabled: canUseImageTools(cfg.api),
       searchEnabled: cfg.webSearch?.enabled !== false,
       runtimeContext: {
         model: cfg.api?.model || '',
@@ -722,8 +721,7 @@ export function createRoutes(deps) {
           chatKey,
           skills: skillManager,
           toolsCfg: effective.tools || {},
-          visionEnabled: effective.api?.vision !== false
-            && modelImageVerdict(effective.api?.provider, effective.api?.model) !== 'no-vision',
+          visionEnabled: canUseImageTools(effective.api),
           searchEnabled: effective.webSearch?.enabled !== false,
           runtimeContext: { model: effective.api?.model || '', provider: effective.api?.provider || '', source: 'api' }
         };

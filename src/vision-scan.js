@@ -43,6 +43,12 @@ export function modelImageVerdict(providerId, modelId) {
   return doc[`${providerId || ''}|||${modelId || ''}`]?.verdict ?? saved;
 }
 
+// 图片输入专用模型负责处理 image_url，文字主模型仍可调用看图工具。
+export function canUseImageTools(api) {
+  const model = String(api?.visionModel || '').trim() || api?.model;
+  return api?.vision !== false && modelImageVerdict(api?.provider, model) !== 'no-vision';
+}
+
 /**
  * 探测单个模型。返回 { verdict, note, httpStatus, latencyMs }。
  * verdict: 'vision' 接受图片内容；'no-vision' 明确拒绝图片内容；'unknown' 无法判定。

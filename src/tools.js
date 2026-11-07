@@ -17,8 +17,9 @@ import { expandForwardNodes } from './onebot.js';
 import { registerTool, listTools } from './tool-registry.js';
 import { holidayOn, upcomingHoliday } from './holidays.js';
 import { compressImage } from './image-compress.js';
+import { detectMime } from './image-type.js';
 import { localStickerPath } from './sticker-manager.js';
-import { isGifBuffer, gifToVideoDataUrl, resolveGifRoute } from './gif-to-video.js';
+import { gifStoryboardDataUrl, gifToVideoDataUrl, resolveGifRoute } from './gif-to-video.js';
 
 /** 当前配置的 GIF 选路（vision/video 开关组合，规则矩阵见 resolveGifRoute 注释）。 */
 function currentGifRoute() {
@@ -26,72 +27,46 @@ function currentGifRoute() {
   return resolveGifRoute({ vision: cfg.api?.vision !== false, video: cfg.api?.video === true });
 }
 
-async function downloadImageAsDataUrl(url, timeoutMs = 30000) {
-  const safeUrl = await validateImageUrl(url);
-  const { buffer, contentType } = await safeFetchBinary(safeUrl);
-  if (!buffer || !buffer.length) throw new Error('图片内容为空');
-  // GIF 在这里分岔（规则矩阵见 resolveGifRoute）：
-  //   vision+video 都开 → 转 mp4 按 video 部件发（llm.js 自动切视频专用模型）；
-  //   只开 vision      → GIF 按图片原样发（读不了的模型由 llm.js 的"图片被拒"
-  //                      降级路径换首帧重试 —— 见 image-compat 的 llm.retry-advisor）；
-  //   vision 没开      → 看图工具整体不可用，不会被调到。
-  if (isGifBuffer(buffer) && currentGifRoute() === 'video') {
-    const video = await gifToVideoDataUrl(buffer);
-    if (video) {
-      return {
-        dataUrl: '',
-        gifVideo: {
-          dataUrl: video.dataUrl,
-          frames: video.frames,
-          width: video.width,
-          height: video.height
-        }
-      };
-    }
-    // 转换失败（没 ffmpeg / 文件异常）→ 落到下面的普通图片路径，按原样发
-  }
-  // 大图片自动压缩（有 ffmpeg 时）：缩到模型可接受的尺寸/体积，降低 token 成本
-  const compressed = await compressImage(buffer);
-  const mime = compressed.compressed ? compressed.mime : (detectMime(buffer) || String(contentType || 'image/jpeg').split(';')[0]);
-  return {
-    dataUrl: `data:${mime};base64,${compressed.buffer.toString('base64')}`,
-    isGif: mime === 'image/gif',
-    // 原始 GIF 字节留着：模型拒收 GIF 时降级重试要取首帧（gifFirstFrameDataUrl）。
-    // 非 GIF 返回 null，不占内存。
-    gifBuffer: isGifBuffer(buffer) ? buffer : null
-  };
+async function gifStoryboard(buffer, signal) {
+  const sheet = await gifStoryboardDataUrl(buffer, signal);
+  if (!sheet) throw new Error('GIF 画面提取失败，请检查文件和 FFmpeg。当前看不到这张动图，请勿猜测画面。');
+  const { frameCount, columns, dataUrl } = sheet;
+  const caption = frameCount > 1
+    ? `这是同一张 GIF 按时间抽取的 ${frameCount} 帧，每行 ${columns} 帧，按从左到右、从上到下的顺序观察动作。`
+    : '从这张 GIF 中取得一帧，仅根据这一帧描述可见画面。';
+  return { dataUrl, caption };
 }
 
-/**
- * 把 downloadImageAsDataUrl 的结果组装成工具返回的 content parts。
- * GIF 转出的视频用 video_url 部件（llm.js 检测到会自动切视频专用模型），
- * 其余仍是 image_url。GIF 按原图（gif-image 路线）发送时：能读 GIF 的模型
- * 看得到动图，读不了的会在网关报错后由 image-compat 的降级路径换首帧重试。
- */
+async function downloadImageAsDataUrl(url, signal) {
+  const safeUrl = await validateImageUrl(url);
+  const { buffer } = await safeFetchBinary(safeUrl);
+  if (!buffer.length) throw new Error('图片内容为空');
+  // QQ 的 .jpg 地址和 Content-Type 都可能指向 GIF 或 WebP，以字节为准。
+  const mime = detectMime(buffer);
+  if (!mime) throw new Error('无法识别图片内容，仅支持 PNG、JPEG、GIF 和 WebP');
+  if (mime === 'image/gif') {
+    const route = currentGifRoute();
+    if (route === 'gif-image') return gifStoryboard(buffer, signal);
+    if (route === 'video') {
+      const video = await gifToVideoDataUrl(buffer);
+      if (video) return { gifVideo: video };
+    }
+  }
+  const compressed = await compressImage(buffer);
+  return { dataUrl: `data:${compressed.mime};base64,${compressed.buffer.toString('base64')}` };
+}
+
 function getImagePartsOrVideo(text, results) {
   const parts = [{ type: 'text', text }];
-  const gifAsImage = [];
-  for (const r of results) {
-    if (r?.gifVideo) {
+  for (const [i, r] of results.entries()) {
+    if (r.caption) parts[0].text += `\n第 ${i + 1} 个附件：${r.caption}`;
+    if (r.gifVideo) {
       parts.push({ type: 'video_url', video_url: { url: r.gifVideo.dataUrl } });
     } else {
       parts.push({ type: 'image_url', image_url: { url: r.dataUrl } });
-      if (r?.isGif) gifAsImage.push(r);
     }
   }
-  if (gifAsImage.length) {
-    parts[0].text += `\n（其中 ${gifAsImage.length} 张是 GIF 动图，按原图发送：部分模型只能看到第一帧，读不了时会自动换成首帧重试）`;
-  }
   return { content: parts, videoCount: parts.filter((p) => p.type === 'video_url').length };
-}
-
-function detectMime(buf) {
-  if (!buf || buf.length < 12) return null;
-  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
-  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
-  if (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a') return 'image/gif';
-  if (buf.toString('ascii', 0, 8) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
-  return null;
 }
 
 function ok(payload) {
@@ -119,12 +94,6 @@ function memberHint(ctx) {
   if (!members.length) return '当前没有可用的成员列表，请先等有群友发言后再试';
   const lines = members.map((m) => `- ${m.name}：${m.userId}`).join('\n');
   return `请从当前会话成员里选一个 QQ 号填进去：\n${lines}`;
-}
-
-function imageParts(text, dataUrls) {
-  const parts = [{ type: 'text', text }];
-  for (const url of dataUrls) parts.push({ type: 'image_url', image_url: { url } });
-  return parts;
 }
 
 /**
@@ -344,7 +313,7 @@ function registerAllTools() {
         const sticker = await ctx.stickers.find(args.stickerId);
         if (!sticker) return err(`找不到表情 ${args.stickerId}`);
         if (!sticker.url) return err('该表情没有图片地址');
-        const r = await downloadImageAsDataUrl(sticker.url);
+        const r = await downloadImageAsDataUrl(sticker.url, ctx.signal);
         const built = getImagePartsOrVideo(`表情 ${sticker.id}（备注：${sticker.desc || '无'}）：`, [r]);
         if (r.gifVideo) {
           built.content[0].text += `\n（这是 GIF 动图，已转成 ${r.gifVideo.frames} 帧、最长边 ${Math.max(r.gifVideo.width, r.gifVideo.height) || '≤480'}px 的视频输入，画面按视频发给模型）`;
@@ -615,10 +584,11 @@ function registerAllTools() {
         const results = [];
         const failed = [];
         for (const url of urls) {
-          try { results.push(await downloadImageAsDataUrl(url)); } catch (e) { failed.push(String(e?.message ?? e)); }
+          ctx.signal?.throwIfAborted();
+          try { results.push(await downloadImageAsDataUrl(url, ctx.signal)); } catch (e) { failed.push(String(e?.message ?? e)); }
         }
         if (!results.length) return err(`图片获取失败：${failed.join('；')}`);
-        const note = failed.length ? `（另有 ${failed.length} 张获取失败）` : '';
+        const note = failed.length ? `（另有 ${failed.length} 个附件的画面未能读取）` : '';
         // GIF 动图可能被转成了视频部件（见 downloadImageAsDataUrl），文案里区分张数
         const videoCount = results.filter((r) => r?.gifVideo).length;
         const imageCount = results.length - videoCount;
@@ -1006,26 +976,29 @@ function registerAllTools() {
           return err(`这个地址返回的不是图片（Content-Type: ${contentType || '未知'}）。只支持 png/jpg/gif/webp 直链。`);
         }
 
-        const b64 = buffer.toString('base64');
         if (isPreview) {
           st.previews += 1;
-          if (!st.previewed.includes(url)) st.previewed.push(url);
+          const staticGif = mime === 'image/gif' && currentGifRoute() === 'gif-image';
+          const previewMime = staticGif ? 'image/png' : mime;
           // 问图片格式兼容 Skill：这种格式能不能喂给当前模型。
           // webp/avif 在部分本地视觉接口会直接 400，那会把整轮打挂 ——
           // 比"这轮看不到图"严重得多，所以改成字节校验后让模型自己决定发不发。
           let supported = true;
           try {
             for (const p of skillManager.getCapabilityProviders('image.mime-support', {})) {
-              const r = p.fn({ mime });
+              const r = p.fn({ mime: previewMime });
               if (r && r.supported === false) supported = false;
               break;
             }
           } catch { /* 能力坏了不影响预览 */ }
 
+          const sheet = staticGif && supported ? await gifStoryboard(buffer, ctx.signal) : null;
+          if (!st.previewed.includes(url)) st.previewed.push(url);
           if (!supported) {
-            return ok(`这张图是 ${mime}（约 ${Math.round(buffer.length / 1024)}KB）。当前视觉接口不支持 ${mime}，看不到画面内容，但字节已校验过是真图、QQ 里能正常显示。你觉得合适就直接调 send_image(url) 发出去（URL 照抄：${url}）。`);
+            return ok(`这张图是 ${mime}（约 ${Math.round(buffer.length / 1024)}KB）。当前视觉接口不支持 ${previewMime} 预览，画面不可见。已校验原图格式，可调用 send_image 发给 QQ（URL 照抄：${url}）。`);
           }
-          return { content: imageParts(`这张图（${mime}，约 ${Math.round(buffer.length / 1024)}KB）——觉得合适就立刻调 send_image(url) 发出去：`, [`data:${mime};base64,${b64}`]) };
+          const preview = sheet ?? { dataUrl: `data:${mime};base64,${buffer.toString('base64')}` };
+          return getImagePartsOrVideo(`这张图（${mime}，约 ${Math.round(buffer.length / 1024)}KB）——觉得合适就立刻调 send_image(url) 发出去：`, [preview]);
         }
 
         // 传 url 而不是只传 base64：OneBot 的 image 段原生支持 http 直链，让**协议端
@@ -1034,7 +1007,7 @@ function registerAllTools() {
         // 这正是"图画出来了但发不出去"的同一个根因。
         // `url` 是刚经 safe-fetch 校验并成功下载过的地址，交给协议端取是安全的。
         // 保留 dataUrl 作为回退：协议端取不到时（防盗链 / 协议端在别的机器）自动改用 base64。
-        const result = await ctx.sender.sendImage(ctx.chatKey, { url, dataUrl: `base64://${b64}` }, {
+        const result = await ctx.sender.sendImage(ctx.chatKey, { url, dataUrl: `base64://${buffer.toString('base64')}` }, {
           note: args.note,
           replyToMessageId: args.replyToMessageId ?? null,
           atUserId: args.atUserId ?? null

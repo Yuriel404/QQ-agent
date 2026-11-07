@@ -4,9 +4,7 @@
 // "支持图片输入"和"能读 GIF"是两回事，"支持视频输入"和"能读 GIF"也是两回事：
 //   · 多数视觉 API 对 GIF 要么按第一帧处理、要么直接拒收；
 //   · 全模态模型多数能读 mp4，却读不了 GIF。
-// 所以当用户在设置里勾了「视频输入」(api.video) 时，看图工具拿到 GIF 不再按
-// 图片原样发，而是先用 ffmpeg 转成 mp4，再按 video 部件发给模型
-// （llm.js 的 specializedModelFor 会自动切到 videoModel）。
+// 只开图片输入时，将 GIF 选帧拼成一张静态 PNG。启用视频输入时，以 MP4 发给视频模型。
 //
 // ── 防"压缩炸弹"（decompression bomb）────────────────────────────────
 // GIF 是无损索引色格式，一个几 MB 的 GIF 解开可能是上万帧超大画布，
@@ -34,44 +32,55 @@ export const GIF_VIDEO_MAX_DIM = 480;
 export const GIF_VIDEO_MAX_FRAMES = 24;
 
 /** 调外部命令，只看退出码；失败/超时返回 false（不抛）。 */
-function runOk(cmd, args, timeoutMs = 30000) {
+function runOk(cmd, args, timeoutMs = 30000, signal) {
   return new Promise((resolve) => {
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    if (signal?.aborted) return resolve(false);
     let child;
     try {
       child = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true });
     } catch {
-      return finish(false);
+      return resolve(false);
     }
-    const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish(false); }, timeoutMs);
-    child.on('error', () => { clearTimeout(timer); finish(false); });
-    child.on('close', (code) => { clearTimeout(timer); finish(code === 0); });
+    let failed = false;
+    const stop = () => {
+      failed = true;
+      child.kill('SIGKILL');
+    };
+    const timer = setTimeout(stop, timeoutMs);
+    signal?.addEventListener('abort', stop, { once: true });
+    child.once('error', () => { failed = true; });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+      resolve(!failed && code === 0);
+    });
   });
 }
 
 /** ffmpeg 探测（成功长期缓存；没找到 60 秒后允许重探——用户装好后不用重启）。 */
-let _ffmpeg = null;
-let _checked = false;
-let _checkedAt = 0;
+let ffmpegProbe;
+let retryProbeAt = 0;
 const FFMPEG_RETRY_MS = 60000;
-async function findFfmpeg() {
-  if (_checked && _ffmpeg) return _ffmpeg;
-  if (_checked && Date.now() - _checkedAt < FFMPEG_RETRY_MS) return _ffmpeg;
-  _checked = true;
-  _checkedAt = Date.now();
-  _ffmpeg = null;
+async function probeFfmpeg() {
   for (const name of ['ffmpeg', 'ffmpeg.exe']) {
-    if (await runOk(name, ['-version'], 5000)) { _ffmpeg = name; break; }
+    if (await runOk(name, ['-version'], 5000)) return name;
   }
-  return _ffmpeg;
+  retryProbeAt = Date.now() + FFMPEG_RETRY_MS;
+  return null;
+}
+
+function findFfmpeg() {
+  if (!ffmpegProbe || Date.now() >= retryProbeAt) {
+    retryProbeAt = Infinity;
+    ffmpegProbe = probeFfmpeg();
+  }
+  return ffmpegProbe;
 }
 
 /** 测试用：清空探测缓存。 */
 export function __resetFfmpegCache() {
-  _ffmpeg = null;
-  _checked = false;
-  _checkedAt = 0;
+  ffmpegProbe = undefined;
+  retryProbeAt = 0;
 }
 
 /** 这段字节是 GIF 吗（魔数 GIF87a / GIF89a）。 */
@@ -179,21 +188,26 @@ async function probeVideoSize(file) {
 }
 
 /** 调外部命令并收集 stdout；失败/超时返回 null。 */
-function runStdout(cmd, args, timeoutMs = 15000) {
+function runStdout(cmd, args, timeoutMs = 15000, signal) {
   return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(null);
     let out = '';
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
     let child;
     try {
       child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     } catch {
-      return finish(null);
+      return resolve(null);
     }
-    const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish(null); }, timeoutMs);
+    const stop = () => child.kill('SIGKILL');
+    const timer = setTimeout(stop, timeoutMs);
+    signal?.addEventListener('abort', stop, { once: true });
     child.stdout.on('data', (d) => { out += d; });
-    child.on('error', () => { clearTimeout(timer); finish(null); });
-    child.on('close', () => { clearTimeout(timer); finish(out || null); });
+    child.once('error', () => {}); // 启动失败后仍有 close，以便统一清理监听器。
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+      resolve(code === 0 ? out || null : null);
+    });
   });
 }
 
@@ -202,7 +216,7 @@ function runStdout(cmd, args, timeoutMs = 15000) {
  *
  * 规则矩阵（2026-09-19 按用户定稿重写；vision = api.vision，video = api.video）：
  *   vision=F, video=F → 'image'      所有图片（含动图）按 [图片] 占位符（看图工具整体不存在）
- *   vision=T, video=F → 'gif-image'  GIF 直接按图片发（读不了 GIF 的模型报错时，由调用方取首帧重试）
+ *   vision=T, video=F → 'gif-image'  将最多四个画面按播放次序拼为一张静态 PNG
  *   vision=F, video=T → 'image'      图片输入没开：视频输入只管视频，图片一律占位符
  *   vision=T, video=T → 'video'      GIF 转 mp4 按 video 部件发（llm.js 自动切 videoModel）
  *
@@ -211,41 +225,85 @@ function runStdout(cmd, args, timeoutMs = 15000) {
 export function resolveGifRoute({ vision = true, video = false } = {}) {
   if (!vision) return 'image';        // 看图工具不存在，谈不上 GIF 选路
   if (video) return 'video';          // 图片+视频都开：动图转视频
-  return 'gif-image';                 // 只开图片：动图按图发，报错降级到首帧
+  return 'gif-image';
 }
 
-/**
- * GIF 首帧提取：把动图的第一帧转成静态 PNG/JPEG 的 dataUrl。
- * 用途：resolveGifRoute 走 'gif-image' 时，模型/网关读不了 GIF 报错的**降级重试**——
- * "报错则取首帧输入模型，此流程写进代码而不靠模型调用"（用户定稿）。
- * 提取失败（没 ffmpeg / 文件异常）返回 null，调用方退回原样发送。
- */
-export async function gifFirstFrameDataUrl(buffer) {
+/** 获取一个播放周期的帧数，据此选取首尾及中间画面。ffprobe 不可用时只解首帧。 */
+async function gifFrameIndices(file, signal) {
+  const raw = await runStdout('ffprobe', [
+    '-v', 'error', '-protocol_whitelist', 'file', '-max_pixels', '16777216', '-f', 'gif', '-ignore_loop', '1',
+    '-select_streams', 'v:0', '-show_entries', 'stream=nb_frames', '-of', 'csv=p=0', file
+  ], 5000, signal);
+  signal?.throwIfAborted();
+  const total = Number(raw);
+  if (!Number.isSafeInteger(total) || total < 2) return [0];
+  const count = Math.min(total, 4);
+  return Array.from({ length: count }, (_, i) => Math.round(i * (total - 1) / (count - 1)));
+}
+
+async function renderStaticPng(buffer, signal, storyboard) {
+  signal?.throwIfAborted();
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12 || buffer.length > 16 * 1024 * 1024) return null;
+  const type = detectImageType(buffer);
+  const mp4 = buffer.toString('ascii', 4, 8) === 'ftyp';
+  if (type?.ext !== '.gif' && type?.ext !== '.webp' && !mp4) return null;
   const ffmpeg = await findFfmpeg();
+  signal?.throwIfAborted();
   if (!ffmpeg) return null;
-  const stamp = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const tmpIn = path.join(os.tmpdir(), `qqa_gif1_in_${stamp}.gif`);
-  const tmpOut = path.join(os.tmpdir(), `qqa_gif1_out_${stamp}.png`);
+  let dir;
   try {
-    fs.writeFileSync(tmpIn, buffer);
-    // -frames:v 1 只解码第一帧；scale 压到 ≤768px（静态帧没必要更大，省 token）
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qqa_frame_'));
+    const tmpIn = path.join(dir, 'input' + (mp4 ? '.mp4' : type.ext));
+    const tmpOut = path.join(dir, 'first.png');
+    fs.writeFileSync(tmpIn, buffer, { mode: 0o600 });
+    // 只解码已知格式的本地输入，禁止 FFmpeg 根据内容解析播放列表或访问网络。
+    const demuxer = mp4 ? 'mov' : type.ext === '.gif' ? 'gif' : 'webp_pipe';
+    const indices = storyboard ? await gifFrameIndices(tmpIn, signal) : [0];
+    const frameCount = indices.length;
+    const columns = Math.min(frameCount, 2);
+    const filters = [];
+    if (frameCount > 1) filters.push(`select='${indices.map(n => `eq(n,${n})`).join('+')}'`);
+    const side = frameCount > 1 ? 480 : 768;
+    filters.push(`scale='min(${side},iw)':'min(${side},ih)':force_original_aspect_ratio=decrease`);
+    if (frameCount > 1) {
+      // GIF 调色板可以逐帧变化，拼图前先统一像素格式。
+      filters.push('format=rgba', `tile=${columns}x${Math.ceil(frameCount / columns)}:nb_frames=${frameCount}:padding=2`);
+    }
     const okRun = await runOk(ffmpeg, [
-      '-y',
-      '-ignore_loop', '0',
-      '-i', tmpIn,
-      '-vf', "scale='min(768,iw)':'min(768,ih)':force_original_aspect_ratio=decrease",
+      '-nostdin', '-y', '-protocol_whitelist', 'file', '-max_pixels', '16777216', '-f', demuxer,
+      ...(demuxer === 'gif' ? ['-ignore_loop', '1'] : []), '-i', tmpIn,
+      '-vf', filters.join(','),
       '-frames:v', '1',
       '-an',
       tmpOut
-    ], 20000);
+    ], 20000, signal);
+    signal?.throwIfAborted();
     if (!okRun || !fs.existsSync(tmpOut)) return null;
     const out = fs.readFileSync(tmpOut);
     if (!out.length || out.length > 4 * 1024 * 1024) return null;
-    return `data:image/png;base64,${out.toString('base64')}`;
+    return { dataUrl: `data:image/png;base64,${out.toString('base64')}`, frameCount, columns };
   } catch {
+    signal?.throwIfAborted();
     return null;
   } finally {
-    try { if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch { /* ignore */ }
-    try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch { /* ignore */ }
+    if (dir) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 文件可能仍被外部程序占用 */ }
+    }
   }
+}
+
+/** 静态图片模式的 GIF 输入。每张动图返回一张 PNG，格子从左到右、从上到下。 */
+export async function gifStoryboardDataUrl(buffer, signal) {
+  if (!isGifBuffer(buffer)) return null;
+  return renderStaticPng(buffer, signal, true);
+}
+
+/** 网关拒收媒体时，从已下载的 GIF、WebP 或 MP4 提取一张静态 PNG。 */
+export async function mediaFirstFrameDataUrl(buffer, signal) {
+  const image = await renderStaticPng(buffer, signal, false);
+  return image?.dataUrl ?? null;
+}
+
+export function gifFirstFrameDataUrl(buffer) {
+  return mediaFirstFrameDataUrl(buffer);
 }

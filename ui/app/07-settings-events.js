@@ -856,12 +856,12 @@ function bindSettingsEvents(c) {
     if (!vhint) return;
     const r = (state.visionResults || {})[`${pid || ''}|||${model || ''}`];
     if (r && (r.verdict === 'vision' || r.verdict === 'no-vision')) {
-      vhint.textContent = r.verdict === 'vision' ? '✅ 当前模型支持图片输入' : '🚫 当前模型不支持图片输入';
+      vhint.textContent = `图片输入模型 ${model}：${r.verdict === 'vision' ? '支持图片输入' : '不支持图片输入'}`;
     } else {
       vhint.textContent = '';
     }
   }
-  syncVisionSwitch(c.api.provider, c.api.model);
+  syncVisionSwitch(c.api.provider, String(c.api.visionModel || '').trim() || c.api.model);
 
   // 「扫描视觉能力」按钮已按需求删除（2026-09-17）。
   // 视觉能力数据仍由内置视觉表 + 模型目录徽标提供；后端 /api/vision/scan
