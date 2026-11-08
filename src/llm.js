@@ -1,7 +1,7 @@
 // OpenAI 兼容 Chat Completions 客户端（非流式）。
 // 支持工具调用、usage 统计、可自选模型 —— 这是与 DSH 解耦后的"大脑"接口。
 import { getConfig } from './config.js';
-import { providerKeyValue, resolveProviderRequest, sameProviderEndpoint } from './provider-credentials.js';
+import { normalizeProviderEndpoint, providerKeyValue, resolveProviderRequest, sameProviderEndpoint } from './provider-credentials.js';
 import { resolveModelPrice, priceAt } from './model-prices.js';
 import { skillManager } from './skills/manager.js';
 import { adaptMediaMessages, hasUserMedia, isMediaRejection } from './media-retry.js';
@@ -45,24 +45,9 @@ function effectiveApi() {
   return { ...cfg.api, apiKey: resolveApiKey(cfg) };
 }
 
-/**
- * 按请求里的模态挑选专用模型。
- *
- * 背景：设置页有「图片输入专用模型」和「视频输入专用模型」两个字段 ——
- * 允许用一个便宜的纯文本模型聊天、只在真的要看图/看视频时才切到贵的多模态模型。
- * 但此前这两个字段**只被存下来、从来没有任何代码读取**：
- * 用户在 UI 里填了模型，实际请求还是走主模型 —— 填了不起作用。
- *
- * 现在在这里生效：扫描本次 messages，出现 video 部分就优先用 videoModel，
- * 出现图片部分就用 visionModel（视频优先，因为视频能同时包含图片部分）。
- *
- * 位置放在 effectiveApi 之后、只在**主调用路径**生效：
- *   · 记忆整理等显式传 overrides 的调用不受影响（它有自己指定的模型）
- *   · 备选模型降级也不受影响（overrides 已由候选序列给出）
- * 这样"切专用模型"不会意外覆盖用户明确指定的模型。
- */
-function specializedModelFor(messages, cfg) {
-  if (!Array.isArray(messages)) return '';
+// 根据本次实际要发送的内容选渠道。同一请求含视频和图片时优先选视频模型。
+function specializedRouteFor(messages, api) {
+  if (!Array.isArray(messages)) return null;
   let hasImage = false;
   let hasVideo = false;
   for (const m of messages) {
@@ -75,29 +60,20 @@ function specializedModelFor(messages, cfg) {
     }
     if (hasVideo) break;
   }
-  if (hasVideo) {
-    const v = String(cfg?.api?.videoModel ?? '').trim();
-    if (v) return v;
-  }
-  if (hasImage || hasVideo) {
-    const v = String(cfg?.api?.visionModel ?? '').trim();
-    if (v) return v;
-  }
-  return '';
+  const videoModel = String(api.videoModel ?? '').trim();
+  if (hasVideo && videoModel) return { model: videoModel, provider: String(api.videoProvider ?? '').trim() };
+  const visionModel = String(api.visionModel ?? '').trim();
+  if ((hasImage || hasVideo) && visionModel) return { model: visionModel, provider: String(api.visionProvider ?? '').trim() };
+  return null;
 }
 
-/**
- * 解析某个提供商 id 对应的 { baseUrl, apiKey }。
- * 用于备选模型跨提供商切换：备选项指定了 provider 时，要用那个提供商的
- * baseUrl + Key 发请求，而不是主模型的。
- * 找不到该提供商时返回 null（调用方应跳过这个备选）。
- */
+/** 只从指定提供商解析端点和密钥，供专用模型和备选模型共用。 */
 function resolveProviderEndpoint(providerId) {
   const cfg = getConfig();
   const pid = String(providerId ?? '').trim();
   if (!pid) return null;
   const p = (cfg.providers || []).find((x) => x.id === pid);
-  if (!p || !String(p.baseURL ?? '').trim()) return null;
+  if (!p || !normalizeProviderEndpoint(p.baseURL)) return null;
   return { baseUrl: String(p.baseURL).trim(), apiKey: providerKeyValue(p, cfg) };
 }
 
@@ -178,15 +154,14 @@ async function requestCandidate(args, { overrides, label }, retries) {
     if (args?.signal?.aborted) throw args.signal.reason ?? new Error('aborted');
     try {
       const r = await chatCompletion({ ...args, overrides });
-      r._usedModel = r.model || (overrides?.model ?? getConfig().api?.model ?? '');
-      // 把"这次实际用的端点"一并带回去：备选模型可能来自**另一个 provider**，
-      // 调用方要据此同步 vendor，否则成本看板的「渠道：模型」聚合会串味。
-      r._usedApi = overrides ?? getConfig().api;
+      r._usedModel = r.model || r._usedApi.model;
       return r;
     } catch (error) {
       if (attempt >= retries || error.mediaRejected || !isRetryableError(error)) throw error;
       const wait = 1000 * Math.pow(2, attempt);   // 1s, 2s
-      console.warn(`[llm] 请求失败（${label}，第 ${attempt + 1} 次尝试），${wait}ms 后重试：${error?.message ?? error}`);
+      const route = !overrides && specializedRouteFor(args.messages, getConfig().api);
+      const target = route ? [route.model, route.provider].filter(Boolean).join(' @ ') : label;
+      console.warn(`[llm] 请求失败（${target}，第 ${attempt + 1} 次尝试），${wait}ms 后重试：${error?.message ?? error}`);
       // 退避等待可被 signal 打断：中止时立刻抛出，不再等下一次注定失败的请求
       const signal = args?.signal ?? null;
       await new Promise((resolve, reject) => {
@@ -253,10 +228,14 @@ export async function chatCompletionWithRetry(args, retries = 2) {
  */
 export async function chatCompletion({ messages, tools = null, toolChoice = 'auto', temperature = null, signal = null, overrides = null, skillContext = null, maxTokens = 0 }) {
   const baseApi = overrides || effectiveApi();
-  // 主调用路径才切"图片/视频专用模型"（见 specializedModelFor 注释）
   let api = baseApi;
   let poolAccountId = '';
-  if (!overrides) {
+  const route = overrides ? null : specializedRouteFor(messages, baseApi);
+  if (route?.provider) {
+    const endpoint = resolveProviderEndpoint(route.provider);
+    if (!endpoint) throw new Error(`专用模型 ${route.model} 的提供商 ${route.provider} 不存在或网关地址无效，请在模型配置中重新选择。`);
+    api = { ...baseApi, ...endpoint, ...route };
+  } else if (!overrides) {
     // ── 账号池（account-pool Skill）：在主调用路径上挑一个端点 ──
     // 每次真实请求都重新挑，所以多轮对话里自然轮转，而不是"整轮锁死一个端点"。
     // 池子为空 / 全部冷却时返回 null，行为与没有这个 Skill 时完全一致。
@@ -265,11 +244,13 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
       for (const p of skillManager.getCapabilityProviders('llm.endpoint-pick', {})) {
         const picked = p.fn({ model: baseApi.model });
         if (picked?.baseUrl) {
+          const sameEndpoint = sameProviderEndpoint(picked.baseUrl, baseApi.baseUrl);
           poolAccountId = picked.id || '';
           api = {
             ...baseApi,
             baseUrl: picked.baseUrl,
-            apiKey: picked.apiKey || (sameProviderEndpoint(picked.baseUrl, baseApi.baseUrl) ? baseApi.apiKey : ''),
+            apiKey: picked.apiKey || (sameEndpoint ? baseApi.apiKey : ''),
+            provider: sameEndpoint ? baseApi.provider : '',
             model: picked.model || baseApi.model
           };
         }
@@ -278,10 +259,9 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
     } catch (error) {
       skillManager.recordError('account-pool', error);
     }
-    const forced = specializedModelFor(messages, getConfig());
-    if (forced && forced !== api.model) api = { ...api, model: forced };
+    if (route) api = { ...api, model: route.model };
   }
-  const ctx = skillContext || { api, model: api.model, messages };
+  const ctx = { ...(skillContext || { api, messages }), model: api.model, provider: api.provider || '' };
 
   const buildBaseBody = () => {
     const body = {
@@ -464,6 +444,7 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
 
   // 响应加工：内置思考提取 + Skill 转换器（提取 reasoning、补统计等），错误隔离 + 串行。
   await applyResultTransforms(result, ctx);
+  result._usedApi = { model: api.model, provider: api.provider || '', baseUrl: api.baseUrl };
   // 回报账号池：这次用了哪个端点、耗时多少（用于动态调权）
   if (poolAccountId) {
     reportPoolFeedback({ accountId: poolAccountId, ok: true, latencyMs: Date.now() - startedAt });

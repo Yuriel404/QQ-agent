@@ -164,18 +164,6 @@ function renderSettingsSection(c) {
 }
 function renderApiSection(c) {
   const currentProvider = (state.providers || []).find((p) => p.id === c.api.provider);
-  const currentModelDisplay = (currentProvider?.modelNames || {})[c.api.model] || c.api.model;
-  // 专用模型的显示名：跨提供商选择时也能读出目录名（找不到就显示裸 id）
-  const displayOf = (modelId) => {
-    const m = String(modelId || '').trim();
-    if (!m) return '';
-    for (const p of (state.providers || [])) {
-      if ((p.modelNames || {})[m]) return `${p.modelNames[m]}`;
-    }
-    return m;
-  };
-  const visionModelDisplay = displayOf(c.api.visionModel);
-  const videoModelDisplay = displayOf(c.api.videoModel);
   const sc = (typeof setCard === 'function') ? setCard : (o) => `<div class="setcard">${o.body}</div>`;
   return `
     <h3 id="settings-api">模型 API</h3>

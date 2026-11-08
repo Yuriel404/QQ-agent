@@ -38,13 +38,11 @@ export const DEFAULT_CONFIG = {
     // 每项 { model, provider? }：provider 留空则沿用主模型的 provider/baseUrl/apiKey；
     // 填了 provider 则切到该提供商（用它的 baseUrl + Key）。按顺序尝试。
     fallbackModels: [],
-    // 按输入类型分开选择模型（可选）：留空则都用上方主模型 api.model。
-    // 图片/视频输入需要模型支持对应模态；文字输入用纯文本模型即可（可省成本）。
-    // ⚠️ 这两个字段现在是**真的会被使用**的：llm.js 检测到请求里带图片/视频部分时，
-    //    会用对应字段的模型替换主模型（仅主调用路径；记忆整理/备选模型降级不受影响）。
-    //    此前它们只是存下来给 UI 看，没有任何代码读取 —— 填了不起作用。
-    visionModel: '',            // 图片输入专用模型（留空 = 用主模型）
-    videoModel: '',             // 视频输入专用模型（留空 = 用主模型）
+    // 专用模型按「提供商 + 模型 ID」保存。旧配置只有模型 ID 时沿用主调用的网关。
+    visionModel: '',
+    visionProvider: '',
+    videoModel: '',
+    videoProvider: '',
     // 视频走哪条路。两条路**互斥**，不会同时喂 ——
     // 同时喂等于同一内容重复计费，而且多数网关会因格式冲突直接 400。
     //   auto   配了 videoModel 就认为你有全模态模型 → 原生读视频；否则抽帧；
@@ -389,6 +387,10 @@ export function deepMerge(base, override) {
 }
 
 function normalizeConfig(config) {
+  if (config.api && typeof config.api === 'object') {
+    if (!String(config.api.visionModel ?? '').trim()) config.api.visionProvider = '';
+    if (!String(config.api.videoModel ?? '').trim()) config.api.videoProvider = '';
+  }
   // 旧版把已解除屏蔽的号码另存为豁免项。升级时从已保存的名单扣除它们。
   const exemptions = Array.isArray(config.communityExemptions) ? config.communityExemptions : [];
   const exempt = new Set(exemptions.map((id) => String(id).trim()));

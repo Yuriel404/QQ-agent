@@ -72,7 +72,7 @@ proactive 运行在 user 消息末尾追加「（主动机会）群里已有一�
 
 ## 第 8 步：llm.js 发送模型请求
 
-- `specializedModelFor`：扫到 video_url 部件 → 换视频专用模型（videoModel）；有 image_url → 换图片专用模型（visionModel）。仅主调用路径，记忆整理/备选降级不受影响
+- `specializedRouteFor` 按消息内容匹配专用模型及其网关。含 `video_url` 时优先用视频配置，图片和视频抽帧用图片配置。显式指定的记忆整理和备选模型使用各自的渠道。
 - `llm.request-params` 转换器（thinking-adapters 等）：往请求体加思考参数、删互斥 temperature（改 body 不改 messages）
 - 对只支持静态图片的网关，在「模型配置」开启「图片输入」、关闭「视频输入」。看图工具按实际字节识别 GIF，用 FFmpeg 抽取最多 4 帧，按时间顺序拼成一张 PNG，交给图片输入专用模型（留空时用主模型）。
 - 如果含媒体的请求收到 415，或 400/422 明确指出不支持该媒体，先尝试已配置的备选模型。原格式均被拒时，尝试将内联的 GIF、WebP 或 MP4 转为静态 PNG 首帧。仍无法读取时，向模型说明媒体不可见，以文字继续。后续工具轮次沿用成功的消息内容。

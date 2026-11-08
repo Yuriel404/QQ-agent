@@ -25,7 +25,7 @@
 | 层 | 负责 | 位置 |
 |---|---|---|
 | 选哪条路 | `auto/native/frames/off` 的判定 | `src/video-reader.js` 的 `resolveVideoRoute()`（纯函数） |
-| 用哪个模型 | 检测到视频部分就切 `api.videoModel` | `src/llm.js` 的 `specializedModelFor()` |
+| 用哪个模型和网关 | 原生视频优先用视频配置，抽帧用图片配置 | `src/llm.js` 的 `specializedRouteFor()` |
 | 怎么抽帧 | ffmpeg 调用、帧数/尺寸/质量 | `skills/video-frames`（能力 `video.frames`） |
 | 组装消息 | 把画面拼成正确的 parts | `src/tools.js` 的 `read_video` + `src/orchestrator.js` |
 
@@ -73,12 +73,12 @@ OpenAI 兼容的**视频输入没有统一标准**，各家格式不同：
   "api": {
     "model": "cheap-text-model",        // 日常聊天用便宜的纯文本模型
     "visionModel": "qwen-vl-max",       // 有图片的请求自动切到这个
+    "visionProvider": "image-gateway",  // 图片模型所属提供商的目录 ID
     "videoModel": "gemini-2.5-pro",     // 有视频的请求自动切到这个（并启用原生视频输入）
+    "videoProvider": "video-gateway",   // 视频模型所属提供商的目录 ID
     "videoMode": "auto"
   }
 }
 ```
 
-> 历史遗留说明：`visionModel` / `videoModel` 曾经**只是存下来给 UI 看**，
-> 没有任何代码读取 —— 填了不起作用。现在检测到对应模态时会真的切模型
-> （仅主调用路径；记忆整理与备选模型降级不受影响）。
+在 Web UI 的「模型配置」里选择专用模型并保存，即可绑定该渠道的地址和密钥。旧配置只记录了模型 ID，会沿用主调用的网关；升级后想用独立网关，需要重新选一次对应渠道下的专用模型并保存。

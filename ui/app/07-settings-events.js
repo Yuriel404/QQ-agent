@@ -861,7 +861,8 @@ function bindSettingsEvents(c) {
       vhint.textContent = '';
     }
   }
-  syncVisionSwitch(c.api.provider, String(c.api.visionModel || '').trim() || c.api.model);
+  const imageModel = String(c.api.visionModel || '').trim();
+  syncVisionSwitch((imageModel && c.api.visionProvider) || c.api.provider, imageModel || c.api.model);
 
   // 「扫描视觉能力」按钮已按需求删除（2026-09-17）。
   // 视觉能力数据仍由内置视觉表 + 模型目录徽标提供；后端 /api/vision/scan

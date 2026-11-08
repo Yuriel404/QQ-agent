@@ -45,8 +45,9 @@ export function modelImageVerdict(providerId, modelId) {
 
 // 图片输入专用模型负责处理 image_url，文字主模型仍可调用看图工具。
 export function canUseImageTools(api) {
-  const model = String(api?.visionModel || '').trim() || api?.model;
-  return api?.vision !== false && modelImageVerdict(api?.provider, model) !== 'no-vision';
+  const visionModel = String(api?.visionModel || '').trim();
+  const provider = (visionModel && api?.visionProvider) || api?.provider;
+  return api?.vision !== false && modelImageVerdict(provider, visionModel || api?.model) !== 'no-vision';
 }
 
 /**

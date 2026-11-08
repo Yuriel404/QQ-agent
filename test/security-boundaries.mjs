@@ -144,31 +144,83 @@ try {
     let reveal;
     let payload;
     Object.assign(w, {
-      state: { config: { api: { provider: 'a', baseUrl: a, model: 'model-a' } },
-        providers: catalog.map((p) => ({ ...p, apiKey: '', hasKey: true })) },
+      state: { config: { api: { provider: 'a', baseUrl: a, model: 'model-a', visionModel: 'shared' } },
+        providers: catalog.map((p) => ({ ...p, models: [...p.models, 'shared'],
+          displayName: '渠道' + p.id, modelNames: { shared: '别名' + p.id }, apiKey: '', hasKey: true })) },
       esc: String, visionBadge: () => '', loadSettings: () => {},
       api: async (url, options) => {
         if (url.includes('/key?')) return new Promise((resolve) => { reveal = resolve; });
         payload = JSON.parse(options.body);
+        if (url === '/api/config') Object.assign(w.state.config.api, payload.api);
         return { result: { ok: true } };
       }
     });
-    w.eval(readAppPart('08-modals.js') + '\nopenModelConfigModal();');
-    const field = (sel) => w.document.querySelector(sel);
+    w.eval(readAppPart('08-modals.js') + '\nObject.assign(window, { openModelConfigModal, openModelPicker });');
+    const field = (sel) => {
+      for (const overlay of w.document.querySelectorAll('.model-modal-overlay.closing')) {
+        overlay.dispatchEvent(new w.Event('animationend'));
+      }
+      return w.document.querySelector(sel);
+    };
+    w.openModelConfigModal();
+    assert.equal(field('#mc-vision-model-pick').value, '随主渠道 · 别名a');
     field('#mc-apikey-toggle').click();
     field('#mc-model-pick').click();
     field('#mcp-left [data-pid="b"]').click();
     field('#mcp-right [data-model="model-b"]').click();
+    assert.equal(field('#mc-vision-model-pick').value, '随主渠道 · 别名b');
     reveal({ apiKey: 'revealed-a' });
     await new Promise((r) => setImmediate(r));
     assert.equal(field('#mc-apikey').value, '******');
     field('#mc-test-btn').click();
     assert.deepEqual(payload, { providerId: 'b', baseUrl: b, apiKey: '', model: 'model-b' });
+    // 两个渠道暴露同一模型 ID，两个专用选择须能分别绑定各自渠道。
+    function pickMedia(which, pid) {
+      field(`#mc-${which}-model-pick`).click();
+      field(`#msp-left [data-pid="${pid}"]`).click();
+      field('#msp-right [data-model="shared"]').click();
+    }
+    pickMedia('vision', 'a');
+    pickMedia('video', 'b');
     field('#mc-apikey').value = 'typed-b';
     field('#mc-apikey').dispatchEvent(new w.Event('input'));
     field('#mc-save').click();
     assert.deepEqual(payload.dshProviderKeys, { b: 'typed-b' });
     assert.equal(payload.api.apiKey, undefined);
+    assert.equal(payload.api.visionProvider, 'a');
+    assert.equal(payload.api.videoProvider, 'b');
+    assert.equal(payload.api.visionModel, 'shared');
+    assert.equal(payload.api.videoModel, 'shared');
+    await new Promise((r) => setImmediate(r));
+
+    w.openModelConfigModal();
+    assert.equal(field('#mc-vision-model-pick').value, '渠道a · 别名a');
+    assert.equal(field('#mc-video-model-pick').value, '渠道b · 别名b');
+    field('#mc-vision-model-pick').click();
+    assert.equal(field('#msp-left .active').dataset.pid, 'a');
+    assert.equal(field('#msp-right [data-model="shared"] .mm-check').textContent, '✓');
+    field('#msp-left [data-pid="b"]').click();
+    assert.equal(field('#msp-right [data-model="shared"] .mm-check').textContent, '');
+    field('#msp-cancel').click();
+    field('#mc-vision-model-clear').click();
+    field('#mc-cancel').click();
+    assert.equal(w.state.config.api.visionProvider, 'a');
+    assert.equal(w.state.config.api.visionModel, 'shared');
+
+    w.openModelConfigModal();
+    field('#mc-video-model-clear').click();
+    field('#mc-save').click();
+    assert.equal(payload.api.videoProvider, '');
+    assert.equal(payload.api.videoModel, '');
+    assert.equal(payload.api.visionProvider, undefined);
+    assert.equal(payload.api.visionModel, undefined);
+    await new Promise((r) => setImmediate(r));
+    // 快捷切换主模型也不能改写专用选择，即便其模型 ID 恰好与旧主渠道 ID 相同。
+    w.state.config.api.visionModel = 'b';
+    w.openModelPicker();
+    field('#mm-left [data-pid="a"]').click();
+    field('#mm-right [data-model="model-a"]').click();
+    assert.deepEqual(payload.api, { provider: 'a', model: 'model-a', baseUrl: a });
     await new Promise((r) => setImmediate(r));
   } finally { dom.window.close(); }
   console.log('通过：模型与搜索密钥隔离、会话权限、请求取消监听清理和前端密钥切换。');
