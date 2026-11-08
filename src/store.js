@@ -15,8 +15,18 @@
 //   media:     可选 [{ kind, url, file, faceId, summary }] 原始媒体定位信息
 // }
 import { ChatArchive, listArchivedChats } from './chat-archive.js';
+import { isVisibleArchiveMessage } from './chat-access.js';
+
+const SEARCH_PAGE_BUDGET = 32;
 
 function isUnread(row) { return !row.self && !row.read; }
+
+function messageExcerpt(text, index, matchLength) {
+  const width = Math.max(320, matchLength + 60);
+  if (text.length <= width) return text;
+  const start = Math.min(text.length - width, Math.max(0, index - 60));
+  return (start ? '…' : '') + text.slice(start, start + width) + (start + width < text.length ? '…' : '');
+}
 
 function findEntry(archive, predicate, localId) {
   for (const [index, page] of archive.pages.entries()) {
@@ -230,6 +240,49 @@ export class ChatStore {
       }
     }
     return result.reverse();
+  }
+
+  /** 从最新入档的消息向前检索。游标使用会话内递增的本地 id，翻页期间新增消息不会挤动结果。 */
+  searchMessages(chatKey, { query, senderId, fromTs, toTs, beforeId, limit = 10, blockedSenders } = {}) {
+    const archive = new ChatArchive(chatKey);
+    const needle = String(query ?? '').trim();
+    // 按字面匹配，在原文中定位命中。转成小写再找下标会被 İ 等变长字符偏移。
+    const pattern = needle ? new RegExp(needle.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&'), 'iu') : null;
+    const sender = String(senderId ?? '').trim();
+    const from = fromTs ?? -Infinity;
+    const to = toTs ?? Infinity;
+    const before = beforeId ?? Infinity;
+    const max = Math.min(30, Math.max(1, Math.trunc(Number(limit)) || 10));
+    const messages = [];
+    let lastScanned = null;
+    let pagesRead = 0;
+    for (let i = archive.pages.length - 1; i >= 0; i--) {
+      const page = archive.pages[i];
+      if (page.firstId >= before || page.maxTs < from || page.minTs > to) continue;
+      // 此页仍可能命中。达到 IO 预算时，即使本轮没有结果也可从已扫描处续查。
+      if (pagesRead >= SEARCH_PAGE_BUDGET || messages.length >= max) {
+        return { messages, nextCursor: lastScanned };
+      }
+      const rows = archive.read(page);
+      pagesRead++;
+      for (let j = rows.length - 1; j >= 0; j--) {
+        const row = rows[j];
+        if (row.id >= before) continue;
+        lastScanned = row.id;
+        if (!isVisibleArchiveMessage(row, blockedSenders) || row.ts < from || row.ts > to) continue;
+        if (sender && (sender === 'self' ? !row.self : String(row.senderId) !== sender)) continue;
+        const text = String(row.text ?? '');
+        const index = pattern ? text.search(pattern) : 0;
+        if (index < 0) continue;
+        // 返回片段即可，避免把各页命中的长正文和媒体附件一直留在内存里。
+        messages.push({
+          mid: row.mid, ts: row.ts, self: row.self, senderId: row.senderId, senderName: row.senderName,
+          text: messageExcerpt(text, index, needle.length)
+        });
+        if (messages.length === max && j > 0) return { messages, nextCursor: lastScanned };
+      }
+    }
+    return { messages, nextCursor: null };
   }
 
   findByMid(chatKey, mid) {

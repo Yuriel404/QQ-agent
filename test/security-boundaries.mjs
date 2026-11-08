@@ -112,12 +112,37 @@ try {
   const list = defs.find((t) => t.id === 'get_chats');
   const send = defs.find((t) => t.id === 'send_to');
   const ctx = { chatKey: 'group:1', session: { sent: [] }, emit() {} };
-  assert.deepEqual(JSON.parse((await list.execute(ctx, {})).content).chats, [{ chatKey: 'group:1' }]);
+  const chats = async (context, args = {}) => JSON.parse((await list.execute(context, args)).content).chats;
+  assert.deepEqual(await chats(ctx), [{ chatKey: 'group:1', name: null }]);
+  ctx.cachedGroupName = id => id === '1' ? '已缓存群名' : null;
+  const directoryCalls = [];
+  ctx.onebot = { async call(action) {
+    directoryCalls.push(action);
+    if (action === 'get_group_list') return [{ group_id: 3, group_name: '屏蔽群' }, { group_id: 2, group_name: '允许群' }];
+    if (action === 'get_friend_list') return { data: [{ user_id: 4, nickname: '好友昵称', remark: '好友备注' }] };
+    throw new Error('unexpected action');
+  } };
+  assert.deepEqual(await chats(ctx), [{ chatKey: 'group:1', name: '已缓存群名' }]);
+  assert.deepEqual(directoryCalls, []);
   updateConfig({ tools: { crossChatSend: true } });
   ctx.store = { listChats: () => ['group:3', 'private:99', 'group:2', 'private:4'] };
-  assert.deepEqual(JSON.parse((await list.execute(ctx, { limit: 2 })).content).chats, [
-    { chatKey: 'group:2' }, { chatKey: 'private:4' }
+  assert.deepEqual(await chats(ctx, { limit: 2 }), [
+    { chatKey: 'group:2', name: '允许群' }, { chatKey: 'private:4', name: '好友备注' }
   ]);
+  assert.deepEqual(directoryCalls.sort(), ['get_friend_list', 'get_group_list']);
+  const peerCtx = {
+    ...ctx, chatKey: 'private:4',
+    onebot: { call: async () => { throw new Error('OneBot unavailable'); } },
+    store: { listChats: () => ['private:4'], recent(key, options) {
+      assert.equal(key, 'private:4');
+      assert.equal(options.includeSelf, false);
+      return [
+        { senderId: '4', senderName: '存档中的昵称' }, { senderId: '4', senderName: '4' },
+        { self: true, senderId: '4', senderName: '机器人' }, { senderId: '99', senderName: '其他用户' }
+      ];
+    } }
+  };
+  assert.deepEqual(await chats(peerCtx), [{ chatKey: 'private:4', name: '存档中的昵称' }]);
   let sent = 0;
   ctx.sender = { sendTextBatch: async () => { sent++; return { sent: [], failed: [] }; } };
   for (const targetChatKey of ['group:3', 'private:99']) {

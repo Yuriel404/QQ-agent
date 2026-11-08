@@ -843,6 +843,7 @@ export class Orchestrator {
 
     const ctx = {
       chatKey, kind, chatId,
+      cachedGroupName: (id) => this.chatNameCache.get(id),
       signal: abortSignal,
       selfId: this.onebot.selfId,
       selfNickname,

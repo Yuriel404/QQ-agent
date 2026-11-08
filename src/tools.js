@@ -7,18 +7,19 @@
 // 重构说明：所有工具通过 registerTool() 注册到 tool-registry.js，
 // 支持在设置页按卡片勾选启用/禁用。
 import { getConfig } from './config.js';
-import { isChatAllowed } from './chat-access.js';
+import { isChatAllowed, isAccessibleChat, isVisibleArchiveMessage } from './chat-access.js';
 import { normalizeMessageList, unquoteJsonString } from './util.js';
 import { formatStickerList } from './stickers.js';
 import { skillManager } from './skills/manager.js';
 import { validateImageUrl, safeFetchBinary, browseLockState, checkBrowseLock } from './safe-fetch.js';
 import { webSearch, webFetch } from './web-search.js';
 import { expandForwardNodes } from './onebot.js';
-import { registerTool, listTools } from './tool-registry.js';
+import { registerTool, listTools, getToolAvailability } from './tool-registry.js';
 import { holidayOn, upcomingHoliday } from './holidays.js';
 import { compressImage } from './image-compress.js';
 import { detectMime } from './image-type.js';
 import { localStickerPath } from './sticker-manager.js';
+import { archiveChatKeyParameter, archiveReadScope, messageSearchParameters, searchArchivedMessages } from './message-search.js';
 import { gifStoryboardDataUrl, gifToVideoDataUrl, resolveGifRoute } from './gif-to-video.js';
 
 /** 当前配置的 GIF 选路（vision/video 开关组合，规则矩阵见 resolveGifRoute 注释）。 */
@@ -77,9 +78,61 @@ function err(message) {
   return { content: `错误：${message}`, isError: true };
 }
 
+async function namedChats(ctx, keys) {
+  const chats = keys.map((chatKey) => ({ chatKey, name: null }));
+  const groups = new Map();
+  const peers = new Map();
+  for (const chat of chats) {
+    const [kind, id] = chat.chatKey.split(':');
+    if (kind === 'group') {
+      chat.name = ctx.cachedGroupName?.(id) || null;
+      if (!chat.name) groups.set(id, chat);
+    } else {
+      peers.set(id, chat);
+    }
+  }
+
+  // 每类最多请求一次，且只保留通过会话权限和条数限制的条目。
+  async function directory(action) {
+    if (!ctx.onebot?.call) return [];
+    try {
+      const response = await ctx.onebot.call(action, {}, 3000);
+      return Array.isArray(response) ? response : (Array.isArray(response?.data) ? response.data : []);
+    } catch { return []; }
+  }
+  const [groupList, friendList] = await Promise.all([
+    groups.size ? directory('get_group_list') : [],
+    peers.size ? directory('get_friend_list') : []
+  ]);
+  for (const group of groupList) {
+    const chat = groups.get(String(group?.group_id));
+    if (chat) chat.name = String(group.group_name || '').trim() || null;
+  }
+  for (const friend of friendList) {
+    const chat = peers.get(String(friend?.user_id));
+    if (chat) chat.name = String(friend.remark || '').trim() || String(friend.nickname || '').trim() || null;
+  }
+  for (const [id, chat] of peers) {
+    if (chat.name || !ctx.store?.recent) continue;
+    try {
+      const recent = ctx.store.recent(chat.chatKey, { limit: 20, includeSelf: false });
+      for (const m of recent.reverse()) {
+        if (m.self || m.isPoke || String(m.senderId) !== id) continue;
+        const name = String(m.senderName || '').trim();
+        if (name && name !== id) {
+          chat.name = name;
+          break;
+        }
+      }
+    } catch { /* 个别存档不可用，保留会话键和空名称。 */ }
+  }
+  return chats;
+}
+
 // 找不到消息 id 时，把当前会话真实可见的 id 告诉模型，避免它继续瞎猜。
-function midHint(ctx) {
+function midHint(ctx, blockedSenders) {
   const mids = ctx.store.recent(ctx.chatKey, { limit: 60 })
+    .filter((m) => isVisibleArchiveMessage(m, blockedSenders))
     .map((m) => m.mid)
     .filter((v) => v !== null && v !== undefined && String(v) !== '');
   const uniq = [...new Set(mids.map(String))].slice(-8);
@@ -429,6 +482,22 @@ function registerAllTools() {
   });
 
   registerTool({
+    id: 'search_messages',
+    name: '检索消息',
+    description: '检索群聊或私聊的存档。省略 chatKey 查当前会话；查其他会话可先用 get_chats 按名称找到 chatKey。至少给出关键词、发送者或时间之一。按入档从新到旧返回片段和 QQ 消息 ID，可用同一 chatKey 和 messageId 调用 get_message_detail 读原文。nextCursor 非空时可继续翻页，即使本页为空。',
+    category: 'query',
+    icon: '🔎',
+    parameters: messageSearchParameters,
+    async execute(ctx, args) {
+      try {
+        return ok(searchArchivedMessages(ctx, args));
+      } catch (error) {
+        return err(error.message);
+      }
+    }
+  });
+
+  registerTool({
     id: 'get_recent_messages',
     name: '查看历史消息',
     description: '往前翻当前会话的更多历史消息（提示词里只带了最近一段；需要更早的上下文时用）。返回带 messageId（就是聊天记录里的 #数字），可用于引用或看图。消息文本出现 [合并转发聊天记录] 时，用 read_forward 展开看内容。',
@@ -519,40 +588,64 @@ function registerAllTools() {
   registerTool({
     id: 'get_chats',
     name: '查看可用会话',
-    description: '查看当前会话的 chatKey。管理员开启跨会话发送后，可列出允许 send_to 发送的目标会话。',
+    description: '查看可用群聊和私聊的 chatKey 与名称（未知为 null）。消息检索启用时列出可查的存档会话，将目标 chatKey 传给 search_messages 即可检索。跨会话记忆和发送开启时也列出相应来源或目标。用 nextOffset 翻页。',
     category: 'query',
     icon: '📋',
     parameters: {
       type: 'object',
-      properties: { limit: { type: 'integer', description: '默认 20，最大 50' } }
+      properties: {
+        limit: { type: 'integer', description: '默认 20，最大 50' },
+        offset: { type: 'integer', minimum: 0, description: '下一页传上次返回的 nextOffset' }
+      }
     },
     async execute(ctx, args) {
-      const limit = Math.min(50, Math.max(1, Number(args?.limit) || 20));
+      const limit = Math.min(50, Math.max(1, Math.trunc(Number(args?.limit)) || 20));
+      const offset = Math.max(0, Math.trunc(Number(args?.offset)) || 0);
       const cfg = getConfig();
-      const keys = cfg.tools?.crossChatSend === true ? ctx.store.listChats() : [ctx.chatKey];
-      const chats = keys.filter((key) => {
-        const [kind, id] = key.split(':');
-        return isChatAllowed(kind, id, cfg);
-      }).slice(0, limit).map((chatKey) => ({ chatKey }));
-      return ok({ count: chats.length, chats });
+      if (!isAccessibleChat(ctx.chatKey, cfg)) return ok({ count: 0, chats: [], nextOffset: null });
+      const availability = { toolsCfg: cfg.tools, runtimeContext: ctx };
+      const listsArchives = cfg.tools?.crossChatSend === true || getToolAvailability('search_messages', availability).enabled;
+      const keys = new Set(listsArchives ? ctx.store?.listChats?.() : []);
+      keys.add(ctx.chatKey);
+      const listsMemory = listTools().some(tool => tool.listsMemoryChats &&
+        getToolAvailability(tool.id, availability).enabled);
+      if (listsMemory && ctx.memory) {
+        for (const key of ctx.memory.listChats()) keys.add(key);
+      }
+      const visible = [...keys].filter(key => isAccessibleChat(key, cfg));
+      const chats = await namedChats(ctx, visible.slice(offset, offset + limit));
+      return ok({ count: chats.length, chats, nextOffset: offset + limit < visible.length ? offset + limit : null });
     }
   });
 
   registerTool({
     id: 'get_message_detail',
     name: '查看消息详情',
-    description: '按 QQ 消息 id 查看单条消息详情（完整文本、发送者、时间）。id 用聊天记录里每条消息前的 #数字，不要自己编。',
+    description: '按 QQ 消息 ID 读取存档原文、发送者和时间。默认查当前会话；回读其他会话的检索结果时，传 search_messages 返回的 chatKey 和对应 messageId。',
     category: 'query',
     icon: '📄',
     parameters: {
       type: 'object',
-      properties: { messageId: { type: ['integer', 'string'], description: 'QQ 消息 id（聊天记录里的 #数字，可能为负数）' } },
+      additionalProperties: false,
+      properties: {
+        chatKey: archiveChatKeyParameter,
+        messageId: { type: ['integer', 'string'], description: 'QQ 消息 id（聊天记录里的 #数字，可能为负数）' }
+      },
       required: ['messageId']
     },
     async execute(ctx, args) {
-      const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
-      if (!entry) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+      if (!(typeof args.messageId === 'string' || Number.isSafeInteger(args.messageId)) || !/^-?\d+$/.test(String(args.messageId))) {
+        return err('messageId 请填存档中实际的 QQ 消息 ID。');
+      }
+      const { chatKey, blockedSenders } = archiveReadScope(ctx, args.chatKey, 'get_message_detail');
+      const entry = ctx.store.findByMid(chatKey, args.messageId);
+      if (!isVisibleArchiveMessage(entry, blockedSenders)) {
+        return err(chatKey === ctx.chatKey
+          ? `当前会话找不到消息 ${args.messageId}。${midHint(ctx, blockedSenders)}`
+          : `在 ${chatKey} 中找不到可读取的消息 ${args.messageId}。`);
+      }
       return ok({
+        chatKey,
         messageId: entry.mid,
         time: new Date(entry.ts).toLocaleString('zh-CN', { hour12: false }),
         sender: entry.self ? '我' : entry.senderName,

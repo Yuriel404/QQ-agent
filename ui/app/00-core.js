@@ -523,6 +523,7 @@ const TOOL_META = {
   send_poke:         { name: '戳一戳',     cat: '发言',   icon: '👆' },
   // 查看类
   get_recent_messages: { name: '翻聊天记录', cat: '查看', icon: '📜' },
+  search_messages:     { name: '检索消息',   cat: '查看', icon: '🔎' },
   get_message_detail:  { name: '看消息详情', cat: '查看', icon: '🔍' },
   get_message_images:  { name: '看图片',     cat: '查看', icon: '🖼️' },
   get_active_members:  { name: '看活跃群友', cat: '查看', icon: '👥' },
